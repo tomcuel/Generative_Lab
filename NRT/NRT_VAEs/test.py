@@ -14,7 +14,8 @@ from src.data.load import (
 )
 from src.models.VAEs import (
     VAEConfig, 
-    BaseVAE
+    BaseVAE, 
+    FastCNNVAE
 )
 
 OUTPUT_DIR = "outputs"
@@ -262,9 +263,88 @@ def test_VQ_VAE():
     vae.plot_samples(n=20, n_rows=4, save_path=os.path.join(OUTPUT_DIR, "mnist_samples_vq_vae.png"))
 
 
+def test_fast_cnn_vae():
+    """
+    Test the FastCNNVAE on the MNIST dataset with downsampling to 16x16
+
+    This function loads the MNIST dataset, 
+    initializes a FastCNNVAE,
+    trains it for a few epochs, save and load the model,
+    and then verify the called methods for reconstruction and sampling
+    """
+    # Load MNIST dataset
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=128, downsample=(16, 16), train=True)
+
+    # Define VAE configuration
+    cfg = VAEConfig(
+        model_type="fastvae",
+        architecture="cnn",  
+        input_dim=256,       # 16*16 after downsampling
+        hidden_dims=(16, 32),
+        latent_dim=32,
+        image_channels=1,
+        image_size=16,
+        kernel_size=3,
+        stride=2, 
+        padding=1,
+        beta_kl=1.0,
+        gamma=0.5,
+        learning_rate=1e-3,
+        step_size=10,
+        weight_decay=1e-5
+    )
+    print("VAE configuration:")
+    print(cfg)
+    print()
+
+    # Initialize VAE
+    device = "cpu"
+    """
+    vae = FastCNNVAE(cfg, device=device)
+    print("VAE architecture:")
+    print(vae)
+    print()
+
+    # Train VAE for a few epochs
+    print("Training VAE...")
+    metrics = vae.fit(mnist_loader, epochs=5, verbose=True)
+    print()
+    print("Training metrics:")
+    for epoch, metric in enumerate(metrics):
+        print(f"Epoch {epoch+1}: Loss={metric.loss:.4f}, Recon Loss={metric.recon:.4f}, KL Div={metric.kld:.4f}")
+    print()
+
+    # Save / Load model
+    print("Saving...")
+    vae.save(os.path.join(OUTPUT_DIR, "fast_cnn_vae.pth"))
+    cfg.save(os.path.join(OUTPUT_DIR, "fast_cnn_vae_config.json"))
+    print("Model saved to fast_cnn_vae.pth and configuration saved to fast_cnn_vae_config.json")
+    print()
+    """
+
+    print("Loading...")
+    cfg = VAEConfig()
+    cfg.load(os.path.join(OUTPUT_DIR, "fast_cnn_vae_config.json"))
+    vae = FastCNNVAE(cfg, device=device)
+    vae.load(os.path.join(OUTPUT_DIR, "fast_cnn_vae.pth"))
+    print("Model loaded from fast_cnn_vae.pth with configuration from fast_cnn_vae_config.json")
+    print()
+
+    # Test reconstructions and sampling
+    x_test, _ = next(iter(mnist_loader))
+    x_test = x_test.to(device)
+    print("Test batch shape:", x_test.shape)  # Should be (128, 256)
+    x_hat = vae.reconstruct(x_test)
+    print("Reconstructed batch shape:", x_hat.shape)  # Should be (128, 1, 16, 16)
+    vae.plot_reconstruction(x_test, n=10, save_path=os.path.join(OUTPUT_DIR, "mnist_reconstructions_fast_cnn_vae.png"))
+    vae.plot_samples(n=20, n_rows=4, save_path=os.path.join(OUTPUT_DIR, "mnist_samples_fast_cnn_vae.png"))
+
+
 if __name__ == "__main__":
     # test_MLP_BaseVAE()
     # test_CNN_BaseVAE()
-    test_VQ_VAE()
+    # test_VQ_VAE()
+    test_fast_cnn_vae()
 
     clear_data_dir()
