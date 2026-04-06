@@ -463,7 +463,7 @@ class VectorQuantizer(nn.Module):
 # =======================================
 @dataclass
 class VAEConfig:
-    model_type: Literal["vae", "vqvae"] = "vae"
+    model_type: Literal["vae", "vqvae", "fastvae"] = "vae"
     architecture: Literal["mlp", "cnn"] = "mlp"
     reconstruction_loss: Literal["mse", "bce"] = "bce"
 
@@ -1156,5 +1156,597 @@ class BaseVAE(nn.Module):
         if show:
             plt.show()
 
+
+class FastCNNVAE(nn.Module):
+    def __init__(
+        self, 
+        cfg: VAEConfig,
+        device: str = "cpu"
+    ) -> None:
+        """
+        Fast CNN VAE with a simple architecture for quick experimentation
+
+        Parameters:
+        -----------
+        cfg: VAEConfig
+            Configuration dataclass containing all hyperparameters and settings for the VAE model
+            hidden_dims will be ignored and set to (16, 32) for simplicity
+        device: str
+            Device to run the model on (default: "cpu")
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> cfg = VAEConfig(model_type="vae", architecture="cnn", image_size=28, image_channels=1, latent_dim=32)
+        >>> vae = FastCNNVAE(cfg, device="cuda")
+        """
+        super().__init__()
+        self.cfg = cfg
+        self.device = device
+        self.to(device)
+
+        # ========== Encoder ==========
+        last_h = cfg.image_channels
+        encoder_layers = []
+        for h in cfg.hidden_dims:
+            encoder_layers.append(nn.Conv2d(last_h, h, cfg.kernel_size, stride=cfg.stride, padding=cfg.padding))
+            encoder_layers.append(nn.LeakyReLU(0.2, inplace=True))
+            last_h = h
+        self.encoder = nn.Sequential(*encoder_layers)
+
+        self.flatten = nn.Flatten()
+
+        # infer shape automatically
+        with torch.no_grad():
+            dummy = torch.zeros(1, cfg.image_channels, cfg.image_size, cfg.image_size)
+            h = self.encoder(dummy)
+            self.feature_shape = h.shape[1:]   # (C,H,W)
+            self.flatten_dim = h.numel()
+
+        self.fc_mu = nn.Linear(self.flatten_dim, cfg.latent_dim)
+        self.fc_logvar = nn.Linear(self.flatten_dim, cfg.latent_dim)
+
+        # ========== Decoder ==========
+        self.fc = nn.Linear(self.cfg.latent_dim, self.flatten_dim)
+
+        self.decoder = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="nearest"),          
+            nn.Conv2d(self.feature_shape[0], cfg.hidden_dims[0], cfg.kernel_size, stride=1, padding=cfg.padding),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Upsample(scale_factor=2, mode="nearest"),          
+            nn.Conv2d(cfg.hidden_dims[0], cfg.image_channels, cfg.kernel_size, stride=1, padding=cfg.padding),
+        )
+
+    # -------------------------------
+    # Core
+    # -------------------------------
+    def encode(
+        self, 
+        x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode input images into latent space parameters (mu and logvar)
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input tensor of shape (batch_size, in_channels, image_size, image_size)
+
+        Returns:
+        --------
+        Tuple[torch.Tensor, torch.Tensor]
+            mu: Tensor of shape (batch_size, latent_dim) representing mean of latent distribution
+            logvar: Tensor of shape (batch_size, latent_dim) representing log-variance of latent distribution
+
+        Usage Example:
+        --------------
+        >>> x = torch.randn(16, 1, 28, 28).to("cuda")  # batch of 16 grayscale images
+        >>> mu, logvar = vae.encode(x)
+        """
+        h = self.encoder(x)
+        h = self.flatten(h)
+        return self.fc_mu(h), self.fc_logvar(h)
+
+    def decode(
+        self, 
+        z: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Decode latent vectors back into image space
+
+        Parameters:
+        -----------
+        z: torch.Tensor
+            Latent tensor of shape (batch_size, latent_dim)
+
+        Returns:
+        --------
+        torch.Tensor
+            Reconstructed tensor of shape (batch_size, out_channels, image_size, image_size)
+
+        Usage Example:
+        --------------
+        >>> z = torch.randn(16, 32).to("cuda")  # batch of 16 latent vectors
+        >>> x_hat = vae.decode(z)
+        """
+        h = self.fc(z)
+        h = h.view(z.size(0), *self.feature_shape)
+        return torch.sigmoid(self.decoder(h))
+
+    def forward(
+        self, 
+        x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through Fast CNN VAE
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input tensor of shape (batch_size, in_channels, image_size, image_size)
+
+        Returns:
+        --------
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+            x_hat: Reconstructed tensor of shape (batch_size, out_channels, image_size, image_size)
+            mu: Tensor of shape (batch_size, latent_dim) representing mean of latent distribution
+            logvar: Tensor of shape (batch_size, latent_dim) representing log-variance of latent distribution
+        
+        Usage Example:
+        --------------
+        >>> x = torch.randn(16, 1, 28, 28).to("cuda")  # batch of 16 grayscale images
+        >>> x_hat, mu, logvar = vae.forward(x)
+        """
+        # auto-fix shape (very important)
+        x = x.view(x.size(0), self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size)
+
+        mu, logvar = self.encode(x)
+        z = reparameterize(mu, logvar)
+        x_hat = self.decode(z)
+
+        return x_hat, mu, logvar
     
+    # -------------------------------
+    # Training
+    # -------------------------------
+    def train_step(
+        self, 
+        x: torch.Tensor,
+        optimizer: torch.optim.Optimizer
+    ) -> VAEMetrics:
+        """
+        Perform a single training step for Fast CNN VAE
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input tensor for the current batch (shape: (batch_size, in_channels, image_size, image_size))
+        optimizer: torch.optim.Optimizer
+            Optimizer to update model parameters
+
+        Returns:
+        --------
+        VAEMetrics
+            Dataclass containing loss values for the current batch
+
+        Usage Example:
+        --------------
+        >>> x = torch.randn(16, 1, 28, 28).to("cuda")  # batch of 16 grayscale images
+        >>> optimizer = torch.optim.Adam(vae.parameters(), lr=1e-3)
+        >>> batch_metrics = vae.train_step(x, optimizer)
+        """
+        optimizer.zero_grad(set_to_none=True)
+
+        x_hat, mu, logvar = self(x)
+        x = x.view(x.size(0), self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size)  # ensure correct shape
+
+        recon = F.binary_cross_entropy(x_hat, x, reduction="mean")
+        kld = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        total_loss = recon + self.cfg.beta_kl * kld
+        metrics = VAEMetrics(loss=total_loss, recon=recon, kld=kld, vq=0.0)
+
+        metrics.loss.backward()
+        optimizer.step()
+
+        return metrics
+
+    def fit(
+        self, 
+        dataloader: DataLoader,
+        epochs: int,
+        verbose: bool = True
+    ) -> List[VAEMetrics]:
+        """
+        Train the Fast CNN VAE model for a specified number of epochs
+
+        Parameters:
+        -----------
+        dataloader: DataLoader
+            DataLoader providing training data batches
+        epochs: int
+            Number of epochs to train for
+        verbose: bool
+            Whether to print training progress after each epoch (default: True)
+
+        Returns:
+        --------
+        List[VAEMetrics]
+            List of VAEMetrics dataclasses containing loss values for each epoch
+
+        Usage Example:
+        --------------
+        >>> dataloader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        >>> metrics = vae.fit(dataloader, epochs=10, verbose=True)
+        """
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.cfg.learning_rate, weight_decay=self.cfg.weight_decay) 
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self.cfg.step_size, gamma=self.cfg.gamma)
+
+        metrics = []
+        for epoch in range(1, epochs + 1):
+            meter = VAEMetrics()
+
+            for x, *_ in dataloader:
+                x = x.to(self.device)
+                batch_metrics = self.train_step(x, optimizer)
+                meter.update(batch_metrics=batch_metrics.__dict__, batch_size=x.size(0))
+
+            scheduler.step()
+
+            meter.normalize(len(dataloader.dataset))
+            metrics.append(meter)
+
+            if verbose:
+                print(f"Epoch {epoch:03d} | Loss {meter.loss:.4f} | Recon {meter.recon:.4f} | KLD {meter.kld:.4f} | LR {scheduler.get_last_lr()[0]:.2e}")
+
+        return metrics
+    
+    # -------------------------------
+    # Save / Load
+    # -------------------------------
+    def save(
+        self,
+        path: str,
+        print_message: bool = False
+    ) -> None:
+        """
+        Save the Fast CNN VAE model state to a file
+
+        Parameters:
+        -----------
+        path: str
+            File path to save the model state (e.g. "models/fast_cnn_vae.pt")
+        print_message: bool
+            Whether to print a confirmation message after saving (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> vae.save("models/fast_cnn_vae.pt")
+        """       
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(self.state_dict(), path)
+        if print_message:
+            print(f"Saved Fast CNN VAE model to {path}")
+
+    def load(
+        self,
+        path: str,
+        print_message: bool = False 
+    ) -> None:
+        """
+        Load the Fast CNN VAE model state from a file
+
+        Parameters:
+        -----------
+        path: str
+            File path to load the model state from (e.g. "models/fast_cnn_vae.pt")
+        print_message: bool
+            Whether to print a confirmation message after loading (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> vae.load("models/fast_cnn_vae.pt")
+        """
+        state_dict = torch.load(path, map_location=self.device)
+        self.load_state_dict(state_dict)
+        if print_message:
+            print(f"Loaded Fast CNN VAE model from {path}")
+
+    # -------------------------------
+    # Reconstruction
+    # -------------------------------
+    def reconstruct(
+        self, 
+        x: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Reconstruct input images by passing them through the encoder and decoder
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input tensor containing images to reconstruct (shape: (batch_size, in_channels, image_size, image_size))
+
+        Returns:
+        --------
+        torch.Tensor
+            Reconstructed tensor of same shape as input
+
+        Usage Example:
+        --------------
+        >>> x = torch.randn(16, 1, 28, 28).to("cuda")  # batch of 16 grayscale images
+        >>> x_hat = vae.reconstruct(x)
+        """
+        self.eval()
+        x = x.to(self.device)
+        
+        x = x.view(x.size(0), self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size)
+
+        x_hat, _, _ = self(x)
+        return x_hat
+    
+    def plot_image_reconstruction(
+        self, 
+        x: torch.Tensor,
+        n: int = 10,
+        save_path: Optional[str] = None,
+        cmap: str = "gray",
+        show: bool = False, 
+        img_size: float = 1.5
+    ) -> None:
+        """
+        Plot original and reconstructed images side by side
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input tensor containing images to reconstruct (shape: (batch_size, in_channels, image_size, image_size))
+        n: int
+            Number of images to plot (default: 10)
+        save_path: Optional[str], default=None
+            Path to save the plot image (if None, plot will not be saved)
+        cmap: str
+            Colormap to use for displaying images (default: "gray")
+        show: bool
+            Whether to display the plot after creating it (default: False)
+        img_size: float
+            Base size in inches for each image (default: 1.5)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> x = torch.randn(10, 1, 28, 28).to("cuda")  # batch of 10 grayscale images
+        >>> vae.plot_image_reconstruction(x, n=10, save_path="recon.png", show=True)
+        """
+        x = x[:n]
+        x_hat = self.reconstruct(x)
+
+        fig, axs = plt.subplots(2, n, figsize=(img_size*n, img_size*2))
+        axs = axs.flatten() if 2 * n > 1 else [axs]
+
+        for i in range(n):
+            img_original = x[i].cpu()
+            img_recon = x_hat[i].cpu()
+
+            img_orig = img_original.view(self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size).permute(1, 2, 0).squeeze()
+            axs[i].imshow(img_orig.cpu().numpy(), cmap=cmap)
+            axs[i].axis("off")
+            axs[i].set_title("Orig")
+
+            img_recon = img_recon.view(self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size).permute(1, 2, 0).squeeze()
+            axs[i + n].imshow(img_recon.detach().cpu().numpy(), cmap=cmap)
+            axs[i + n].axis("off")
+            axs[i + n].set_title("Recon")
+
+        plt.tight_layout()
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, bbox_inches="tight")
+            print(f"Saved reconstruction plot to {save_path}")
+        if show:
+            plt.show()
+
+    def plot_blobs_reconstruction(
+        self, 
+        x: torch.Tensor,
+        n: int = 10,
+        save_path: Optional[str] = None,
+        show: bool = False
+    ) -> None:
+        """
+        Plot original and reconstructed blobs on the same 2D scatter plot
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input tensor containing blobs to reconstruct (shape: batch_size x 2 for 2D blobs)
+        n: int
+            Number of blobs to plot (default: 10)
+        save_path: Optional[str], default=None
+            Path to save the plot image (if None, plot will not be saved)
+        show: bool
+            Whether to display the plot after creating it (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> x = torch.randn(10, 2).to("cuda")  # batch of 10 2D blob samples
+        >>> vae.plot_blobs_reconstruction(x, n=10, save_path="recon_blobs.png", show=True)
+        """
+        x = x[:n]
+        x_hat = self.reconstruct(x)
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        # Plot original blobs
+        x_cpu = x.cpu().numpy()
+        x_hat_cpu = x_hat.cpu().detach().numpy()
+
+        ax.scatter(x_cpu[:, 0], x_cpu[:, 1], c='blue', s=100, alpha=0.7, label='Original', marker='o')
+        ax.scatter(x_hat_cpu[:, 0], x_hat_cpu[:, 1], c='red', s=100, alpha=0.7, label='Reconstructed', marker='x', linewidths=2)
+
+        # Draw lines connecting original to reconstructed
+        for i in range(n):
+            ax.plot([x_cpu[i, 0], x_hat_cpu[i, 0]], [x_cpu[i, 1], x_hat_cpu[i, 1]], 'k--', alpha=0.3)
+
+        ax.legend(loc="best")
+        ax.set_title("Blob Reconstruction (2D)")
+        ax.set_xlabel("Dimension 1")
+        ax.set_ylabel("Dimension 2")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, bbox_inches="tight")
+            print(f"Saved blob reconstruction plot to {save_path}")
+
+    # -------------------------------
+    # Sampling
+    # -------------------------------
+    @torch.no_grad()
+    def sample(
+        self,
+        n: int
+    ) -> torch.Tensor:
+        """
+        Generate new samples by sampling from the latent space and passing through the decoder
+
+        Parameters:
+        -----------
+        n: int
+            Number of samples to generate
+
+        Returns:
+        --------
+        torch.Tensor
+            Generated samples tensor of shape (n, out_channels, image_size, image_size)
+
+        Usage Example:
+        --------------
+        >>> samples = vae.sample(n=10)
+        """
+        self.eval()
+        z = torch.randn(n, self.cfg.latent_dim, device=self.device)
+        samples = self.decode(z)
+        return samples.view(n, self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size)
+    
+    def plot_image_samples(
+        self,
+        n: int = 10,
+        n_rows: int = 2,
+        save_path: Optional[str] = None,
+        cmap: str = "gray",
+        show: bool = False, 
+        img_size: float = 1.5
+    ) -> None:
+        """
+        Plot generated samples in a grid
+
+        Parameters:
+        -----------
+        n: int
+            Number of samples to generate and plot (default: 10)
+        n_rows: int
+            Number of rows in the plot grid (default: 2)
+        save_path: Optional[str], default=None
+            Path to save the plot image (if None, plot will not be saved)
+        cmap: str
+            Colormap to use for displaying images (default: "gray")
+        show: bool
+            Whether to display the plot after creating it (default: False)
+        img_size: float
+            Base size in inches for each image (default: 1.5)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> vae.plot_image_samples(n=10, n_rows=2, save_path="samples.png", show=True)
+        """
+        samples = self.sample(n)
+        n_cols = math.ceil(n / n_rows)
+
+        fig, axs = plt.subplots(n_rows, n_cols, figsize=(img_size*n_cols, img_size*n_rows))
+        axs = axs.flatten() if n_rows * n_cols > 1 else [axs]
+
+        for i in range(n):
+            img_sample = samples[i]
+            img = img_sample.view(self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size).permute(1, 2, 0).squeeze()
+            axs[i].imshow(img.cpu().numpy(), cmap=cmap)
+            axs[i].axis("off")
+
+        plt.suptitle("Generated Samples")
+        plt.tight_layout()
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, bbox_inches="tight")
+            print(f"Saved sample plot to {save_path}")
+        if show:
+            plt.show()
+
+    def plot_blobs_samples(
+        self,
+        n: int = 10,
+        save_path: Optional[str] = None,
+        show: bool = False
+    ) -> None:
+        """
+        Plot generated blob samples on a 2D scatter plot
+
+        Parameters:
+        -----------
+        n: int
+            Number of blob samples to generate and plot (default: 10)
+        save_path: Optional[str], default=None
+            Path to save the plot image (if None, plot will not be saved)
+        show: bool
+            Whether to display the plot after creating it (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> vae.plot_blobs_samples(n=10, save_path="samples_blobs.png", show=True)
+        """
+        samples = self.sample(n)
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        samples_cpu = samples.cpu().numpy()
+        ax.scatter(samples_cpu[:, 0], samples_cpu[:, 1], c='green', s=100, alpha=0.7, label='Generated', marker='o')
+        
+        ax.legend(loc="best")
+        ax.set_title("Generated Blob Samples (2D)")
+        ax.set_xlabel("Dimension 1")
+        ax.set_ylabel("Dimension 2")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, bbox_inches="tight")
+            print(f"Saved blob sample plot to {save_path}")
+        if show:
+            plt.show()
+        plt.close(fig)
+
+
 # === FILE: NRT/NRT_VAEs/test.py ===
