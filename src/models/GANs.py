@@ -1028,4 +1028,118 @@ class GAN(nn.Module):
         return samples.view(n, 1, self.cfg.image_size, self.cfg.image_size).cpu()
 
 
+"""
+Style-based GANs (StyleGANs)
+
+# 1. Mapping Network
+class MappingNetwork(nn.Module):
+    def __init__(self, latent_dim=32, style_dim=32, n_layers=4):
+        super().__init__()
+        layers = []
+        for _ in range(n_layers):
+            layers.append(nn.Linear(latent_dim, style_dim))
+            layers.append(nn.LeakyReLU(0.2))
+            latent_dim = style_dim
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, z):
+        return self.net(z)
+
+# 2. Style Modulation (core trick)
+This replaces BatchNorm completely.
+class AdaIN(nn.Module):
+    def __init__(self, channels, style_dim):
+        super().__init__()
+        self.fc = nn.Linear(style_dim, channels * 2)
+
+    def forward(self, x, w):
+        style = self.fc(w)
+        scale, bias = style.chunk(2, dim=1)
+
+        scale = scale.unsqueeze(-1).unsqueeze(-1)
+        bias = bias.unsqueeze(-1).unsqueeze(-1)
+
+        mean = x.mean([2, 3], keepdim=True)
+        std = x.std([2, 3], keepdim=True) + 1e-8
+
+        x = (x - mean) / std
+        return scale * x + bias
+
+# 3. Styled Conv Block
+class StyledConvBlock(nn.Module):
+    def __init__(self, in_c, out_c, style_dim):
+        super().__init__()
+        self.conv = nn.Conv2d(in_c, out_c, 3, padding=1)
+        self.adain = AdaIN(out_c, style_dim)
+        self.act = nn.LeakyReLU(0.2)
+
+    def forward(self, x, w, noise=None):
+        x = self.conv(x)
+
+        if noise is not None:
+            x = x + noise
+
+        x = self.adain(x, w)
+        return self.act(x)
+
+# 4. StyleGAN Generator
+class StyleGANGenerator(nn.Module):
+    def __init__(self, latent_dim=32, style_dim=32, channels=[128, 64, 32], image_channels=1):
+        super().__init__()
+
+        self.mapping = MappingNetwork(latent_dim, style_dim)
+
+        self.constant = nn.Parameter(torch.randn(1, channels[0], 4, 4))
+
+        self.blocks = nn.ModuleList()
+        in_c = channels[0]
+
+        for out_c in channels:
+            self.blocks.append(StyledConvBlock(in_c, out_c, style_dim))
+            in_c = out_c
+
+        self.to_rgb = nn.Conv2d(in_c, image_channels, 1)
+
+    def forward(self, z):
+        w = self.mapping(z)
+
+        batch_size = z.size(0)
+        x = self.constant.repeat(batch_size, 1, 1, 1)
+
+        for block in self.blocks:
+            noise = torch.randn_like(x)
+            x = block(x, w, noise)
+            x = F.interpolate(x, scale_factor=2, mode="bilinear")
+
+        return torch.tanh(self.to_rgb(x))
+
+# 5. Discriminator (keep it simple but strong)
+StyleGAN does not need fancy discriminator tricks.
+class StyleGANDiscriminator(nn.Module):
+    def __init__(self, image_channels=1, channels=[32, 64, 128]):
+        super().__init__()
+
+        layers = []
+        in_c = image_channels
+
+        for out_c in channels:
+            layers.append(nn.utils.spectral_norm(
+                nn.Conv2d(in_c, out_c, 4, 2, 1)
+            ))
+            layers.append(nn.LeakyReLU(0.2))
+            in_c = out_c
+
+        self.conv = nn.Sequential(*layers)
+
+        self.fc = nn.utils.spectral_norm(
+            nn.Linear(channels[-1] * 4 * 4, 1)
+        )
+
+    def forward(self, x):
+        h = self.conv(x)
+        h = h.view(h.size(0), -1)
+        return self.fc(h)
+"""
+
+
 # === FILE: NRT/NRT_GANs/test.py ===
