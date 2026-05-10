@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from typing import Dict, List, Optional, Tuple, Literal
 
 
@@ -591,12 +592,13 @@ class CGANDiscriminator(nn.Module):
         x = torch.cat([x, y_embed], dim=1)
         return self.net(x)
 
+
 # =======================================
 # Generative Adversarial Networks (GANs)
 # =======================================
 @dataclass
 class GANConfig:
-    architecture: Literal["GAN", "CGAN", "DCGAN", "UnrolledGAN", "StyleGANs"] = "GAN"
+    architecture: Literal["GAN", "CGAN", "DCGAN", "MLP_UnrolledGAN", "DC_UnrolledGAN", "StyleGANs"] = "GAN"
     loss: Literal["Default", "Wasserstein", "LeastSquare"] = "Default"
     latent_dim: int = 32   
 
@@ -633,7 +635,6 @@ class GANConfig:
     spectral_norm_on: Optional[bool] = False
 
     # Training 
-    gamma: float = 0.5 
     learning_rate: float = 1e-3
     step_size: int = 20
     weight_decay: float = 1e-5
@@ -788,13 +789,13 @@ class GAN(nn.Module):
         # Select architecture
         if cfg.architecture == "DCGAN":
             self.G = DCGANGenerator(cfg.image_size, cfg.image_channels, cfg.hidden_dims, cfg.latent_dim, cfg.kernel_size, cfg.stride, cfg.padding, cfg.dropout, cfg.batch_norm)
-            self.D = DCGANDiscriminator(cfg.image_size, cfg.image_channels, cfg.hidden_dims, cfg.kernel_size, cfg.stride, cfg.padding, cfg.spectral_norm_on)
+            self.D = DCGANDiscriminator(cfg.image_size, cfg.image_channels, cfg.hidden_dims[::-1], cfg.kernel_size, cfg.stride, cfg.padding, cfg.spectral_norm_on)
         elif cfg.architecture == "CGAN":
             self.G = CGANGenerator(cfg.latent_dim, cfg.hidden_dims, cfg.num_classes, cfg.input_dim, cfg.dropout, cfg.batch_norm)
-            self.D = CGANDiscriminator(cfg.input_dim, cfg.hidden_dims, cfg.num_classes, cfg.spectral_norm_on)
+            self.D = CGANDiscriminator(cfg.input_dim, cfg.hidden_dims[::-1], cfg.num_classes, cfg.spectral_norm_on)
         else:
             self.G = MLPGenerator(cfg.latent_dim, cfg.input_dim, cfg.hidden_dims, cfg.dropout, cfg.batch_norm)
-            self.D = MLPDiscriminator(cfg.input_dim, cfg.hidden_dims, cfg.spectral_norm_on)
+            self.D = MLPDiscriminator(cfg.input_dim, cfg.hidden_dims[::-1], cfg.spectral_norm_on) # [::-1] reverse hiddens dims won't generally be needed for MLP since convention preferes symmetric architectures, but we do it for consistency with DCGANs
 
         self.G.to(device)
         self.D.to(device)
@@ -867,7 +868,17 @@ class GAN(nn.Module):
         if y is not None:
             y = y.to(self.device)
 
-        if self.cfg.architecture != "DCGAN":
+        # Ensure input tensor has the correct shape for the chosen architecture
+        # For DCGAN we expect image tensors (N, C, H, W). 
+        # Some dataloaders return flattened images (N, H*W) or (N, H, W)
+        if self.cfg.architecture == "DCGAN":
+            if x.dim() == 2:
+                # (N, H*W) -> (N, C, H, W)
+                x = x.view(x.size(0), self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size)
+            elif x.dim() == 3:
+                # (N, H, W) -> (N, C, H, W)
+                x = x.unsqueeze(1)
+        else:
             x = x.view(x.size(0), -1)
 
         batch_size = x.size(0)
@@ -961,7 +972,7 @@ class GAN(nn.Module):
     def fit(self, dataloader, epochs, verbose=True):
         history = []
 
-        for epoch in range(epochs):
+        for epoch in tqdm(range(epochs), desc="Training process"):
             meter = GANMetrics()
 
             for batch in dataloader:
