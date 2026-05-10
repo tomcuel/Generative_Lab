@@ -19,7 +19,8 @@ from src.data.load import (
 )
 from src.data.utils import (
     plot_blob_distribution,
-    plot_images
+    plot_images, 
+    save_image_grid
 )
 from src.models.GANs import (
     MLPGenerator, 
@@ -37,8 +38,11 @@ OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 BLOB_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "blobs")
 os.makedirs(BLOB_OUTPUT_DIR, exist_ok=True)
+MNIST_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "mnist")
+os.makedirs(MNIST_OUTPUT_DIR, exist_ok=True)
 CIFAR_OUTPUT_DIR = os.path.join(OUTPUT_DIR, "cifar10")
 os.makedirs(CIFAR_OUTPUT_DIR, exist_ok=True)
+
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -280,6 +284,481 @@ def test_mlp_gan_blobs():
     plt.close()
 
 
+def test_mlp_wasserstein_gan_blobs():
+    """
+    Test MLP GAN on Blobs dataset with wasserstein loss function and gradient penalty
+
+    This function initializes an MLP GAN with wasserstein loss and gradient penalty configuration,
+    and tests its forward pass and loss computation,    
+    and then verify the sampling (without ema)
+    """
+    print("Loading Blobs dataset...")
+    space_dim = 2
+    cent = [(-0.4, 0), (-0.285, -0.285), (-0.285, 0.285), (0., -0.4), (0., 0.4), (0.285, -0.285), (0.285, 0.285), (0.4, 0)]
+    blob_tensor = load_blobs(n_samples=1600, n_features=space_dim, centers=cent, cluster_std=0.04, random_state=42)
+    print("Blobs dataset shape:", blob_tensor.shape) # Should be (1600, 2)  
+
+    # Change the range of the blob data to be between -1 and 1 for better GAN training stability
+    print("old range of blob data: min =", blob_tensor.min().item(), "max =", blob_tensor.max().item())
+    blob_min = blob_tensor.min(dim=0, keepdim=True)[0]
+    blob_max = blob_tensor.max(dim=0, keepdim=True)[0]
+    blob_tensor = 2 * (blob_tensor - blob_min) / (blob_max - blob_min + 1e-8) - 1
+    print("new range of blob data: min =", blob_tensor.min().item(), "max =", blob_tensor.max().item())
+
+    # Plot real data distribution
+    # plot_blob_distribution(blob_tensor.numpy(), save_path=os.path.join(BLOB_OUTPUT_DIR,"blobs_real.png"))
+
+    # Prepare DataLoader
+    blob_dataset = torch.utils.data.TensorDataset(blob_tensor)
+    blob_loader = DataLoader(blob_dataset, batch_size=128, shuffle=True)
+    print("Test batch content: ", next(iter(blob_loader))[0][:5])  # Print first 5 samples of the first batch
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="GAN", 
+        loss="Wasserstein",
+        latent_dim=16,
+        input_dim=space_dim,
+        hidden_dims=[128, 128],
+        weight_clip=0.01,
+        gradient_penalty_lambda=10.0,
+        n_critic=5,
+        dropout=None,
+        batch_norm=True,
+        spectral_norm_on=True,
+        learning_rate=2e-4,
+        step_size=50,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,
+        is_ema=False,
+        ema_decay=0.995
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    blob_loader = DataLoader(blob_tensor, batch_size=128, shuffle=True)
+    epochs = 300
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(BLOB_OUTPUT_DIR, "mlp_wgan_blobs")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training MLP GAN with Wasserstein loss and gradient penalty on Blobs dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(blob_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(1000).numpy()
+        plot_blob_distribution(blob_tensor.numpy(), samples, save_path=os.path.join(TEST_OUTPUT_DIR,f"blobs_gen_rep{rep+1}.png"))
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("MLP Wasserstein GAN Loss History on Blobs dataset")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_unrolled_gan_blobs():
+    """ 
+    Test Unrolled GAN on Blobs dataset with default loss function
+
+    This function initializes an Unrolled GAN with default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (with ema)
+    """    
+    print("Testing Unrolled GAN on Blobs dataset ...")
+    space_dim = 2
+    cent = [(-0.4, 0), (-0.285, -0.285), (-0.285, 0.285), (0., -0.4), (0., 0.4), (0.285, -0.285), (0.285, 0.285), (0.4, 0)]
+    blob_tensor = load_blobs(n_samples=1600, n_features=space_dim, centers=cent, cluster_std=0.04, random_state=42)
+    print("Blobs dataset shape:", blob_tensor.shape) # Should be (1600, 2)
+
+    # Change the range of the blob data to be between -1 and 1 for better GAN training stability
+    print("old range of blob data: min =", blob_tensor.min().item(), "max =", blob_tensor.max().item())
+    blob_min = blob_tensor.min(dim=0, keepdim=True)[0]
+    blob_max = blob_tensor.max(dim=0, keepdim=True)[0]
+    blob_tensor = 2 * (blob_tensor - blob_min) / (blob_max - blob_min + 1e-8) - 1
+    print("new range of blob data: min =", blob_tensor.min().item(), "max =", blob_tensor.max().item())
+
+    # Plot real data distribution
+    # plot_blob_distribution(blob_tensor.numpy(), save_path=os.path.join(BLOB_OUTPUT_DIR,"blobs_real.png"))
+
+    # Prepare DataLoader
+    blob_dataset = torch.utils.data.TensorDataset(blob_tensor)
+    blob_loader = DataLoader(blob_dataset, batch_size=128, shuffle=True)    
+    print("Test batch content: ", next(iter(blob_loader))[0][:5])  # Print first 5 samples of the first batch
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="MLP_UnrolledGAN",
+        loss="Default",
+        latent_dim=16,
+        input_dim=space_dim,
+        hidden_dims=[128, 128],
+        unrolled_steps=5,
+        dropout=None,
+        batch_norm=True,
+        spectral_norm_on=True,
+        learning_rate=2e-4,
+        step_size=50,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,
+        is_ema=True,
+        ema_decay=0.995
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    blob_loader = DataLoader(blob_tensor, batch_size=128, shuffle=True)
+    epochs = 300
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(BLOB_OUTPUT_DIR, "mlp_unrolled_gan_blobs")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training Unrolled MLP GAN on Blobs dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(blob_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(1000).numpy()
+        plot_blob_distribution(blob_tensor.numpy(), samples, save_path=os.path.join(TEST_OUTPUT_DIR,f"blobs_gen_rep{rep+1}.png"))
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("Unrolled MLP GAN Loss History on Blobs dataset")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_mlp_gan_mnist():
+    """
+    Test MLP GAN on MNIST dataset with default loss function
+
+    This function initializes an MLP GAN with default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (with ema)
+    """
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=128, train=True)
+
+    # Plot real data distribution
+    first_numbers = next(iter(mnist_loader))[0][:5]  # Get the first 5 samples of the first batch
+    print(first_numbers.shape)  # torch.Size([5, 784]) for 28x28 downsampled images
+    plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR,"mnist_real.png"), title="Image 1 from MNIST dataset")
+    
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="GAN",
+        loss="Default",
+        latent_dim=64,
+        input_dim=784,
+        hidden_dims=[256, 256],
+        dropout=0.0,
+        batch_norm=False,
+        spectral_norm_on=True,
+        learning_rate=2e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,
+        is_ema=True,
+        ema_decay=0.995
+    )
+    print("GAN configuration:")
+    print(config)
+    print() 
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 10
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(MNIST_OUTPUT_DIR, "mlp_gan_mnist")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training MLP GAN on MNIST dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(mnist_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5).numpy()
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"mnist_gen_rep{rep+1}.png"), title=f"Generated Images from MLP GAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("MLP GAN Loss History on MNIST dataset")  
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_mlp_wasserstein_gan_mnist():
+    """
+    Test MLP GAN on MNIST dataset with wasserstein loss function and gradient penalty
+
+    This function initializes an MLP GAN with wasserstein loss and gradient penalty configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (without ema)
+    """
+    print("Testing MLP GAN with Wasserstein loss and gradient penalty on MNIST dataset ...")
+    mnist_loader = load_mnist(batch_size=128, train=True)
+    
+    # Plot real data distribution
+    # first_numbers = next(iter(mnist_loader))[0][:5]  # Get the first 5 samples of the first batch
+    # print(first_numbers.shape)  # torch.Size([5, 784]) for 28x28 downsampled images
+    # plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR,"mnist_real.png"), title="Image 1 from MNIST dataset")
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="GAN",
+        loss="Wasserstein",
+        latent_dim=64,
+        input_dim=784,
+        hidden_dims=[256, 256],
+        weight_clip=0.01,
+        gradient_penalty_lambda=10.0,
+        n_critic=5,
+        dropout=0.0,
+        batch_norm=False,
+        spectral_norm_on=True,
+        learning_rate=1e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.0,
+        beta2=0.9,
+        is_ema=False,
+        ema_decay=0.995
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 10
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(MNIST_OUTPUT_DIR, "mlp_wgan_mnist")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training MLP GAN with Wasserstein loss and gradient penalty on MNIST dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(mnist_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5).numpy()
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"mnist_gen_rep{rep+1}.png"), title=f"Generated Images from MLP Wasserstein GAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("MLP Wasserstein GAN Loss History on MNIST dataset")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_unrolled_gan_mnist():
+    """
+    Test Unrolled GAN on MNIST dataset with default loss function
+
+    This function initializes an Unrolled GAN with default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (with ema)
+    """
+    print("Testing Unrolled GAN on MNIST dataset ...")
+    mnist_loader = load_mnist(batch_size=128, train=True)
+
+    # Plot real data distribution
+    # first_numbers = next(iter(mnist_loader))[0][:5]  # Get the first 5 samples of the first batch
+    # print(first_numbers.shape)  # torch.Size([5, 784]) for 28x28 downsampled images
+    # plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR,"mnist_real.png"), title="Image 1 from MNIST dataset")
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="MLP_UnrolledGAN",
+        loss="Default",
+        latent_dim=64,
+        input_dim=784,
+        hidden_dims=[256, 256],
+        unrolled_steps=5,
+        dropout=0.0,
+        batch_norm=False,
+        spectral_norm_on=True,
+        learning_rate=2e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,
+        is_ema=True,
+        ema_decay=0.995
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 10
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(MNIST_OUTPUT_DIR, "mlp_unrolled_gan_mnist")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training Unrolled MLP GAN on MNIST dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(mnist_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5).numpy()
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"mnist_gen_rep{rep+1}.png"), title=f"Generated Images from Unrolled MLP GAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("Unrolled MLP GAN Loss History on MNIST dataset")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_cgan_gan_mnist():
+    """
+    Test CGAN on MNIST dataset with default loss function
+
+    This function initializes a CGAN with default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (with ema)
+    """
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=128, train=True)  
+
+    # Plot real data distribution
+    # first_numbers = next(iter(mnist_loader))[0][:5]  # Get the first 5 samples of the first batch
+    # print(first_numbers.shape)  # torch.Size([5, 784]) for 28x28 downsampled images
+    # plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR,"mnist_real.png"), title="Image 1 from MNIST dataset")
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="CGAN",
+        loss="Default",
+        latent_dim=64,
+        input_dim=784,
+        hidden_dims=[256, 256],
+        num_classes=10,
+        dropout=0.0,
+        batch_norm=False,
+        spectral_norm_on=True,
+        learning_rate=2e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,    
+        is_ema=True,
+        ema_decay=0.999
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 10
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(MNIST_OUTPUT_DIR, "cgan_mnist")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training CGAN on MNIST dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(mnist_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5, labels=torch.tensor([0,1,2,3,4])).numpy()  # Sample one image for each of the first 5 classes
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"mnist_gen_rep{rep+1}.png"), title=f"Generated Images from CGAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("CGAN Loss History on MNIST dataset")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
 if __name__ == "__main__":
     print_section("Testing Generator and Discriminator architectures")
 
@@ -293,13 +772,17 @@ if __name__ == "__main__":
 
     print_section("Testing GAN models and configurations")
     print_subsection("Testing MLP GAN on Blobs dataset with some parameter tweaking")
-    test_mlp_gan_blobs()
+    # test_mlp_gan_blobs()
+    # test_mlp_wasserstein_gan_blobs()
+    # test_unrolled_gan_blobs()
 
     print_subsection("Testing MLP GAN on MNIST dataset")
-    print_subsection("Testing DCGAN on MNIST dataset")
+    # test_mlp_gan_mnist()
+    # test_mlp_wasserstein_gan_mnist()
+    # test_unrolled_gan_mnist()
+
     print_subsection("Testing CGAN on MNIST dataset")
-    print_subsection("Testing GAN configs on CIFAR-10 dataset")
-
+    # test_cgan_gan_mnist()
+    
     print("All tests completed successfully!")
-
     # clear_data_dir()
