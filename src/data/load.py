@@ -59,44 +59,11 @@ def load_blobs(
     return torch.tensor(X, dtype=torch.float32)
 
 
-def _flatten_or_downsample(
-    x: torch.Tensor,
-    downsample: tuple[int, int] | None
-) -> torch.Tensor:
-    """
-    Helper transform function to either flatten the image or downsample it
-
-    Parameters:
-    -----------
-    x: torch.Tensor
-        Input image tensor of shape (C, H, W)
-    downsample: tuple[int, int] | None
-        If None, the image will be flattened to (C*H*W,)
-        If a tuple (new_h, new_w), the image will be resized to (C, new_h, new_w) and then flattened to (C*new_h*new_w,)
-    
-    Returns:
-    --------
-    torch.Tensor
-        Transformed image tensor of shape (C*H*W,) or (C*new_h*new_w,)
-
-    Usage Example:
-    --------------
-    >>> img = torch.rand(3, 32, 32)  # Example image
-    >>> flat_img = _flatten_or_downsample(img, None)
-    >>> print(flat_img.shape)  # Output: torch.Size([3072])
-    >>> downsampled_img = _flatten_or_downsample(img, (16, 16))
-    >>> print(downsampled_img.shape)  # Output: torch.Size([768])
-    """
-    if downsample is None:
-        return torch.flatten(x)
-    else:
-        x = F.interpolate(x.unsqueeze(0), size=downsample).squeeze(0)
-        return torch.flatten(x)
-
-
 def load_mnist(
     batch_size: int = 128,
     downsample: tuple[int, int] | None = None,
+    normalize: bool = False, 
+    flatten: bool = True,
     train: bool = True
 ) -> DataLoader:
     """
@@ -109,9 +76,13 @@ def load_mnist(
     downsample: tuple[int, int] | None
         If None, images will be flattened to (28*28,)
         If a tuple (new_h, new_w), images will be resized to (new_h, new_w) and then flattened to (new_h*new_w,)
+    normalize: bool
+        If True, normalize pixel values to [-1, 1] range (critical for GANs/VAEs); if False, keep pixel values in [0, 1] range
+    flatten: bool
+        If True, images will be flattened to (H*W,) or (new_h*new_w,); if False, images will be kept in (C, H, W) format
     train: bool
         If True, load the training set; otherwise, load the test set
-
+    
     Returns:
     --------
     DataLoader
@@ -125,10 +96,20 @@ def load_mnist(
     ...     print(labels.shape)  # Output: torch.Size([64])
     ...     break
     """
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Lambda(lambda x: _flatten_or_downsample(x, downsample))
-    ])
+    transform_list = []
+    transform_list.append(transforms.ToTensor())    
+
+    if downsample is not None:
+        transform_list.append(transforms.Resize(downsample))
+
+    if normalize:
+        transform_list.append(transforms.Normalize((0.5,), (0.5,)))
+        # Normalize((0.5,), (0.5,)) give [-1, 1]
+
+    if flatten:
+        transform_list.append(transforms.Lambda(lambda x: x.view(-1)))
+
+    transform = transforms.Compose(transform_list)
 
     dataset = datasets.MNIST(
         root="./data",
@@ -143,6 +124,8 @@ def load_mnist(
 def load_fashion_mnist(
     batch_size: int = 128,
     downsample: tuple[int, int] | None = None,
+    normalize: bool = False,
+    flatten: bool = True,
     train: bool = True
 ) -> DataLoader:
     """
@@ -155,9 +138,13 @@ def load_fashion_mnist(
     downsample: tuple[int, int] | None
         If None, images will be flattened to (28*28,)
         If a tuple (new_h, new_w), images will be resized to (new_h, new_w) and then flattened to (new_h*new_w,)
+    normalize: bool
+        If True, normalize pixel values to [-1, 1] range (critical for GANs/VAEs); if False, keep pixel values in [0, 1] range
+    flatten: bool
+        If True, images will be flattened to (H*W,) or (new_h*new_w,); if False, images will be kept in (C, H, W) format
     train: bool
         If True, load the training set; otherwise, load the test set
-
+    
     Returns:
     --------
     DataLoader
@@ -171,10 +158,20 @@ def load_fashion_mnist(
     ...     print(labels.shape)  # Output: torch.Size([64])
     ...     break
     """
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Lambda(lambda x: _flatten_or_downsample(x, downsample))
-    ])
+    transform_list = []
+    transform_list.append(transforms.ToTensor())
+
+    if downsample is not None:
+        transform_list.append(transforms.Resize(downsample))
+
+    if normalize:
+        transform_list.append(transforms.Normalize((0.5,), (0.5,)))
+        # Normalize((0.5,), (0.5,)) give [-1, 1]
+
+    if flatten:
+        transform_list.append(transforms.Lambda(lambda x: x.view(-1)))
+
+    transform = transforms.Compose(transform_list)
 
     dataset = datasets.FashionMNIST(
         root="./data",
@@ -189,10 +186,10 @@ def load_fashion_mnist(
 def load_cifar10(
     batch_size: int = 128,
     downsample: Optional[Tuple[int, int]] = None,
-    flatten: bool = True,
-    train: bool = True,
     grayscale: bool = False, 
-    normalize: bool = False
+    normalize: bool = False,
+    flatten: bool = True,
+    train: bool = True
 ) -> DataLoader:
     """
     Load the CIFAR-10 dataset with optional downsampling, flattening, grayscale conversion, and normalization
@@ -204,14 +201,14 @@ def load_cifar10(
     downsample: tuple[int, int] | None
         If None, images will be flattened to (H*W,) [if grayscale] or (C*H*W,) [if RGB]
         If a tuple (new_h, new_w), images will be resized to (new_h, new_w) and then flattened to (new_h*new_w,) [if grayscale] or (C*new_h*new_w,) [if RGB]
-    flatten: bool
-        If True, images will be flattened to (C*H*W,) or (C*new_h*new_w,); if False, images will be kept in (C, H
-    train: bool
-        If True, load the training set; otherwise, load the test set
     grayscale: bool
         If True, convert images to grayscale; otherwise, keep them in RGB
     normalize: bool
         If True, normalize pixel values to [-1, 1] range (critical for GANs/VAEs); if False, keep pixel values in [0, 1] range
+    flatten: bool
+        If True, images will be flattened to (H*W,) or (C*H*W,); if False, images will be kept in (C, H, W) format
+    train: bool
+        If True, load the training set; otherwise, load the test set
 
     Returns:
     --------
@@ -235,13 +232,15 @@ def load_cifar10(
 
     transform_list.append(transforms.ToTensor())
 
+    if downsample is not None:
+        transform_list.append(transforms.Resize(downsample))
+
     if normalize:
-        transform_list.append(
-            transforms.Normalize(
-                (0.5,) * channels,
-                (0.5,) * channels
-            )
-        )
+        transform_list.append(transforms.Normalize((0.5,) * channels, (0.5,) * channels))
+        # Normalize((0.5,) * channels, (0.5,) * channels) give [-1, 1]
+
+    if flatten:
+        transform_list.append(transforms.Lambda(lambda x: x.view(-1)))
 
     transform = transforms.Compose(transform_list)
 
@@ -252,22 +251,7 @@ def load_cifar10(
         transform=transform
     )
 
-    def collate_fn(batch): # Custom collate function to handle downsampling and flattening
-        imgs, labels = zip(*batch)
-        imgs = torch.stack(imgs)
-        if downsample is not None:
-            imgs = F.interpolate(imgs, size=downsample)
-        if flatten:
-            imgs = imgs.view(imgs.size(0), -1)
-
-        return imgs, torch.tensor(labels)
-
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=collate_fn
-    )
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 
 # === FILE: NRT/NRT_load/test.py ===
