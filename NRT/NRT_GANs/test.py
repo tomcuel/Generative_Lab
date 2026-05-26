@@ -915,6 +915,169 @@ def test_dcgan_wasserstein_mnist():
     plt.close()
 
 
+def test_cgan_cifar10():
+    """
+    Test CGAN on CifAR-10 dataset with default loss function
+
+    This function initializes a CGAN with default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (with ema)
+    """
+    print("Testing CGAN on CifAR-10 dataset ...")
+    cifar_loader = load_cifar10(batch_size=128, downsample=(16, 16), normalize=True, flatten=True, train=True)
+
+    # Plot real data distribution
+    first_images = next(iter(cifar_loader))[0][:5]  # Get the first 5 samples of the first batch
+    print(first_images.shape)  # torch.Size([5, 768]) for 16x16 downsampled images with 3 channels
+    # reshape to (5, 3, 16, 16) for plotting
+    first_images = first_images.view(-1, 3, 16, 16)
+    first_images = (first_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    print(first_images.shape)  # torch.Size([5, 3, 16, 16])
+    plot_images(first_images, 5, save_path=os.path.join(CIFAR_OUTPUT_DIR,"cifar10_real.png"), title="Image 1 from Cifar-10 dataset")
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="CGAN",
+        loss="Default",
+        latent_dim=64,
+        input_dim=768,
+        hidden_dims=[256, 256],
+        num_classes=10,
+        dropout=0.0,
+        batch_norm=False,
+        spectral_norm_on=True,
+        learning_rate=2e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,    
+        is_ema=True,
+        ema_decay=0.999
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 5
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(CIFAR_OUTPUT_DIR, "cgan_cifar10")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training CGAN on Cifar-10 dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(cifar_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5, labels=torch.tensor([0,1,2,3,4])).numpy()  # Sample one image for each of the first 5 classes
+        samples = (samples + 1) / 2 # Convert from [-1,1] to [0,1]
+        samples = samples.reshape(-1, 3, 16, 16)  # Reshape to (5, 3, 16, 16) for plotting
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"cifar10_gen_rep{rep+1}.png"), title=f"Generated Images from CGAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("CGAN Loss History on Cifar-10 dataset")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_dcgan_cifar10():
+    """
+    Test DCGAN on CifAR-10 dataset with default loss function
+
+    This function initializes a DCGAN with default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (with ema)
+    """
+    print("Testing DCGAN on Cifar-10 dataset ...")
+    cifar_loader = load_cifar10(batch_size=128, downsample=(16, 16), normalize=True, flatten=False, train=True)
+
+    # Plot real data distribution
+    # first_images = next(iter(cifar_loader))[0][:5]  # Get the first 5 samples of the first batch
+    # print(first_images.shape)  # torch.Size([5, 3, 16, 16]) for 16x16 downsampled images with 3 channels
+    # first_images = (first_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    # plot_images(first_images, 5, save_path=os.path.join(CIFAR_OUTPUT_DIR,"cifar10_real.png"), title="Image 1 from Cifar-10 dataset")
+     
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="DCGAN",
+        loss="Default",
+        latent_dim=64,
+        hidden_dims=[256, 128, 64],
+        image_size=16,
+        image_channels=3,
+        kernel_size=4,
+        stride=2,
+        padding=1,
+        dropout=0.0,
+        batch_norm=True,
+        spectral_norm_on=False, # too slow otherswise for this test
+        learning_rate=2e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,    
+        is_ema=False,
+        ema_decay=0.999
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+    print()
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 5
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(CIFAR_OUTPUT_DIR, "dcgan_cifar10")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training DCGAN on Cifar-10 dataset - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(cifar_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5).numpy()
+        samples = (samples + 1) / 2 # Convert from [-1,1] to [0,1]
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"cifar10_gen_rep{rep+1}.png"), title=f"Generated Images from DCGAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("DCGAN Loss History on Cifar-10 dataset")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_dcgan_cifar10_2():
+    pass
+
+
 if __name__ == "__main__":
     print_section("Testing Generator and Discriminator architectures")
 
@@ -943,6 +1106,13 @@ if __name__ == "__main__":
     print_subsection("Testing DCGAN on MNIST dataset")
     # test_dcgan_mnist()
     # test_dcgan_wasserstein_mnist()
+
+    print_subsection("Testing CGAN on CifAR-10 dataset")
+    # test_cgan_cifar10()
+
+    print_subsection("Testing DCGAN on CifAR-10 dataset")
+    # test_dcgan_cifar10()
+    test_dcgan_cifar10_2()
     
     print("All tests completed successfully!")
     # clear_data_dir()
