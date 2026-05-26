@@ -223,7 +223,10 @@ class DCGANGenerator(nn.Module):
         self.image_size = image_size
         self.image_channels = image_channels
 
-        self.init_size = image_size // (2 ** len(conv_channels))
+        n_upsamples = len(conv_channels)
+        self.init_size = image_size // (2 ** n_upsamples)
+        if self.init_size * (2 ** n_upsamples) != image_size:
+            raise ValueError(f"image_size={image_size} not compatible with conv_channels={conv_channels}")
 
         self.fc = nn.Linear(latent_dim, conv_channels[0] * self.init_size * self.init_size)
 
@@ -293,8 +296,7 @@ class DCGANGenerator(nn.Module):
         """
         h = self.fc(z)
         h = h.view(h.size(0), -1, self.init_size, self.init_size)
-        x = self.conv(h)
-        return F.interpolate(x, size=(self.image_size, self.image_size))
+        return self.conv(h)
 
 
 class DCGANDiscriminator(nn.Module):
@@ -352,16 +354,14 @@ class DCGANDiscriminator(nn.Module):
             c = h
         self.conv = nn.Sequential(*conv_layers)
 
-        # infer automatically the size of the flattened conv output
-        with torch.no_grad():
-            dummy = torch.zeros(1, image_channels, image_size, image_size)
-            conv_out = self.conv(dummy)
-            conv_out_dim = conv_out.view(1, -1).size(1)
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),  # (B, C, 1, 1)
+            nn.Flatten(),             # (B, C)
+            nn.Linear(c, 1)           # (B, 1)
+        )
 
-        final_layer = nn.Linear(conv_out_dim, 1)
         if spectral_norm_on:
-            final_layer = spectral_norm(final_layer)
-        self.fc = final_layer
+            self.head[2] = spectral_norm(self.head[2])
 
         self.init_weights()
 
@@ -414,8 +414,7 @@ class DCGANDiscriminator(nn.Module):
         >>> validity = disc(x)  # Discriminator output of shape (16, 1)
         """
         h = self.conv(x)
-        h = h.view(h.size(0), -1)
-        return self.fc(h)
+        return self.head(h)
 
 
 # =======================================
@@ -868,17 +867,7 @@ class GAN(nn.Module):
         if y is not None:
             y = y.to(self.device)
 
-        # Ensure input tensor has the correct shape for the chosen architecture
-        # For DCGAN we expect image tensors (N, C, H, W). 
-        # Some dataloaders return flattened images (N, H*W) or (N, H, W)
-        if self.cfg.architecture == "DCGAN":
-            if x.dim() == 2:
-                # (N, H*W) -> (N, C, H, W)
-                x = x.view(x.size(0), self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size)
-            elif x.dim() == 3:
-                # (N, H, W) -> (N, C, H, W)
-                x = x.unsqueeze(1)
-        else:
+        if self.cfg.architecture not in ["DCGAN", "DC_UnrolledGAN"]:
             x = x.view(x.size(0), -1)
 
         batch_size = x.size(0)
