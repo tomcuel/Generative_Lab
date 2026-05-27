@@ -611,6 +611,7 @@ class GANConfig:
     kernel_size: int = 4
     stride: int = 2
     padding: int = 1
+    noise_coef: float = 0.03
 
     # For CGANs
     num_classes: int = 10
@@ -872,6 +873,9 @@ class GAN(nn.Module):
 
         batch_size = x.size(0)
 
+        if self.cfg.architecture == "DCGAN":
+            x = x + self.cfg.noise_coef * torch.randn_like(x)
+
         # =======================
         # Unrolled GAN training
         # =======================
@@ -908,7 +912,11 @@ class GAN(nn.Module):
         # ======================
         z = torch.randn(batch_size, self.cfg.latent_dim, device=self.device)
 
-        n_critic = self.cfg.n_critic if self.cfg.loss == "Wasserstein" else 1
+        n_critic = 1
+        if self.cfg.architecture == "DCGAN":
+            n_critic = 2
+        if self.cfg.loss == "Wasserstein":
+            n_critic = self.cfg.n_critic 
 
         for _ in range(n_critic):
             z = torch.randn(batch_size, self.cfg.latent_dim, device=self.device)
