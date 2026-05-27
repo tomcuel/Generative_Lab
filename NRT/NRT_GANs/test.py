@@ -1001,7 +1001,7 @@ def test_dcgan_cifar10():
 
     This function initializes a DCGAN with default configuration,
     and tests its forward pass and loss computation,
-    and then verify the sampling (with ema)
+    and then verify the sampling (without ema)
     """
     print("Testing DCGAN on Cifar-10 dataset ...")
     cifar_loader = load_cifar10(batch_size=128, downsample=(16, 16), normalize=True, flatten=False, train=True)
@@ -1075,7 +1075,244 @@ def test_dcgan_cifar10():
 
 
 def test_dcgan_cifar10_2():
-    pass
+    """
+    Test DCGAN on downsampled CifAR-10 dataset with default loss function
+
+    This function initializes a DCGAN with small architecture and default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (without ema)
+    Note: This test is similar to the previous one but with a smaller architecture and more epochs to test going deeper in training and see if the model can learn to generate better samples with more training, even with a smaller architecture.
+    This is also to test the stability of the training process over more epochs.
+    """
+    print("Testing DCGAN on Cifar-10 dataset with more epochs and smaller architecture ...")
+    cifar_loader = load_cifar10(batch_size=128, downsample=(16, 16), normalize=True, flatten=False, train=True, subset_size=2000)
+
+    # Plot real data distribution
+    # first_images = next(iter(cifar_loader))[0][:5]  # Get the first 5 samples of the first batch
+    # print(first_images.shape)  # torch.Size([5, 3, 16, 16]) for 16x16 downsampled images with 3 channels
+    # first_images = (first_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    # plot_images(first_images, 5, save_path=os.path.join(CIFAR_OUTPUT_DIR,"cifar10_real.png"), title="Image 1 from Cifar-10 dataset")
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="DCGAN",
+        loss="Default",
+        latent_dim=64,
+        hidden_dims=[128, 64],
+        image_size=16,
+        image_channels=3,
+        kernel_size=4,
+        stride=2,
+        padding=1,
+        dropout=0.0,
+        batch_norm=True,
+        spectral_norm_on=False, # too slow otherswise for this test
+        learning_rate=2e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,    
+        is_ema=False,
+        ema_decay=0.999
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 10
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(CIFAR_OUTPUT_DIR, "dcgan_cifar10_2")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training DCGAN on Cifar-10 dataset with more epochs and smaller architecture - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(cifar_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5).numpy()
+        samples = (samples + 1) / 2 # Convert from [-1,1] to [0,1]
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"cifar10_gen_rep{rep+1}.png"), title=f"Generated Images from DCGAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("DCGAN Loss History on Cifar-10 dataset with more epochs and smaller architecture")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_dcgan_cifar10_3():
+    """
+    Test DCGAN on downsized CifAR-10 dataset with default loss function and a slightly bigger architecture than the previous test
+
+    This function initializes a DCGAN with a slightly bigger architecture than the previous test and default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (without ema)
+    Note: This test is similar to the previous one but with a slightly bigger architecture and 32x32 images to test if the model can learn to generate better samples with a slightly bigger architecture and more details in the images, even with more epochs.
+    The subset still making it roughly 10x faster than the first one 
+    """
+    print("Testing DCGAN on Cifar-10 dataset with more epochs and slightly bigger architecture ...")
+    cifar_loader = load_cifar10(batch_size=128, downsample=None, normalize=True, flatten=False, train=True, subset_size=2000)
+
+    # Plot real data distribution
+    first_images = next(iter(cifar_loader))[0][:5]  # Get the first 5 samples of the first batch
+    print(first_images.shape)  # torch.Size([5, 3, 32, 32]) for 32x32 images with 3 channels
+    first_images = (first_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    plot_images(first_images, 5, save_path=os.path.join(CIFAR_OUTPUT_DIR,"cifar10_real_32_32.png"), title="Image 1 from Cifar-10 dataset")
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="DCGAN",
+        loss="Default",
+        latent_dim=64,
+        hidden_dims=[256, 128, 64],
+        image_size=32,
+        image_channels=3,
+        kernel_size=4,
+        stride=2,
+        padding=1,
+        noise_coef=0.03,
+        dropout=0.0,
+        batch_norm=True,
+        spectral_norm_on=False, # too slow otherswise for this test
+        learning_rate=1e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,    
+        is_ema=False,
+        ema_decay=0.999
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 10
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(CIFAR_OUTPUT_DIR, "dcgan_cifar10_3")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training DCGAN on Cifar-10 dataset with more epochs and slightly bigger architecture - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(cifar_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(5).numpy()
+        samples = (samples + 1) / 2 # Convert from [-1,1] to [0,1]
+        plot_images(samples, 5, save_path=os.path.join(TEST_OUTPUT_DIR,f"cifar10_gen_rep{rep+1}.png"), title=f"Generated Images from DCGAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("DCGAN Loss History on Cifar-10 dataset with more epochs and slightly bigger architecture")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
+
+
+def test_dcgan_cifar10_4():
+    """
+    Test DCGAN on downsized CifAR-10 dataset, trying to have result there 
+
+    This function initializes a DCGAN with a smaller architecture than the previous test and default configuration,
+    and tests its forward pass and loss computation,
+    and then verify the sampling (without ema)
+    Note: This test is similar to the previous one but with a smaller architecture and 32
+    """
+    print("Testing DCGAN on Cifar-10 dataset with less downsampling and a slightly smaller architecture ...")
+    cifar_loader = load_cifar10(batch_size=64, downsample=None, normalize=True, flatten=False, train=True, subset_size=10000)
+
+    # Plot real data distribution
+    # first_images = next(iter(cifar_loader))[0][:5]  # Get the first 5 samples of the first batch
+    # print(first_images.shape)  # torch.Size([5, 3, 32, 32]) for 32x32 images with 3 channels
+    # first_images = (first_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    # plot_images(first_images, 5, save_path=os.path.join(CIFAR_OUTPUT_DIR,"cifar10_real_32_32.png"), title="Image 1 from Cifar-10 dataset")
+
+    # Define GAN configuration
+    config = GANConfig(
+        architecture="DCGAN",
+        loss="Default",
+        latent_dim=64,
+        hidden_dims=[128, 64],
+        image_size=32,
+        image_channels=3,
+        kernel_size=4,
+        stride=2,
+        padding=1,
+        noise_coef=0.02,
+        dropout=0.0,
+        batch_norm=True,
+        spectral_norm_on=False, # too slow otherswise for this test
+        learning_rate=2e-4,
+        step_size=20,
+        weight_decay=0.0,
+        beta1=0.5,
+        beta2=0.999,    
+        is_ema=False,
+        ema_decay=0.999
+    )
+    print("GAN configuration:")
+    print(config)
+    print()
+
+    # Initialize GAN
+    device = "cpu"
+    gan = GAN(config, device=device)
+    print("GAN Architecture:")
+    print(gan)
+
+    # Train the model for a few epochs then plot the generated samples, then repeat the process
+    epochs = 10
+    nb_reps = 5
+    TEST_OUTPUT_DIR = os.path.join(CIFAR_OUTPUT_DIR, "dcgan_cifar10_4")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    G_losses = []
+    D_losses = []
+    for rep in range(nb_reps):
+        print(f"Training DCGAN on Cifar-10 dataset with less downsampling and slightly smaller architecture - Rep {rep+1}/{nb_reps} - Epochs: {epochs*rep} to {epochs*(rep+1)}")
+        history = gan.fit(cifar_loader, epochs=epochs, verbose=False)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+        samples = gan.sample(10).cpu().numpy()
+        samples = (samples + 1) / 2 # Convert from [-1,1] to [0,1]
+        plot_images(samples, 10, save_path=os.path.join(TEST_OUTPUT_DIR,f"cifar10_gen_rep{rep+1}.png"), title=f"Generated Images from DCGAN - Rep {rep+1}")
+        print()
+
+    # Plot loss history
+    plt.figure()
+    plt.plot(G_losses, label="Generator Loss", color='red')
+    plt.plot(D_losses, label="Discriminator Loss", color='blue')
+    plt.legend()
+    plt.title("DCGAN Loss History on Cifar-10 dataset with less downsampling and slightly smaller architecture")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.savefig(os.path.join(TEST_OUTPUT_DIR,"loss_history.png"))
+    plt.close()
 
 
 if __name__ == "__main__":
@@ -1112,7 +1349,9 @@ if __name__ == "__main__":
 
     print_subsection("Testing DCGAN on CifAR-10 dataset")
     # test_dcgan_cifar10()
-    test_dcgan_cifar10_2()
+    # test_dcgan_cifar10_2()
+    # test_dcgan_cifar10_3()
+    # test_dcgan_cifar10_4()
     
     print("All tests completed successfully!")
     # clear_data_dir()
