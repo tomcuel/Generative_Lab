@@ -189,7 +189,8 @@ def load_cifar10(
     grayscale: bool = False, 
     normalize: bool = False,
     flatten: bool = True,
-    train: bool = True
+    train: bool = True, 
+    subset_size: Optional[int] = None
 ) -> DataLoader:
     """
     Load the CIFAR-10 dataset with optional downsampling, flattening, grayscale conversion, and normalization
@@ -209,6 +210,8 @@ def load_cifar10(
         If True, images will be flattened to (H*W,) or (C*H*W,); if False, images will be kept in (C, H, W) format
     train: bool
         If True, load the training set; otherwise, load the test set
+    subset_size: int | None
+        If not None, load only a subset of the dataset for faster testing (useful for GANs/VAEs where training can be slow); if None, load the entire dataset
 
     Returns:
     --------
@@ -250,6 +253,9 @@ def load_cifar10(
         download=True,
         transform=transform
     )
+    if subset_size is not None:
+        subset = torch.utils.data.Subset(dataset, range(subset_size))
+        dataset = subset
 
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
