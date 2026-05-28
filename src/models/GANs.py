@@ -593,21 +593,391 @@ class CGANDiscriminator(nn.Module):
 
 
 # =======================================
+# StyleGAN Generator and Discriminator (simplified version)
+# =======================================
+# Mapping Network 
+class MappingNetwork(nn.Module):
+    def __init__(self, 
+        latent_dim: int = 64,
+        style_dim: int = 64,
+        n_layers: int = 4
+    ) -> None:
+        """
+        Mapping Network for StyleGAN: Transforms latent vector z into style vector w
+
+        Parameters:
+        -----------
+        latent_dim: int
+            Dimensionality of the input latent vector z (default: 64)
+        style_dim: int
+            Dimensionality of the output style vector w (default: 64)
+        n_layers: int
+            Number of fully connected layers in the mapping network (default: 4)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> mapping = MappingNetwork(latent_dim=64, style_dim=64, n_layers=4)
+        >>> z = torch.randn(16, 64)  # Batch of 16 latent vectors
+        >>> w = mapping(z)  # Output style vectors of shape (16, 64)
+        """
+        super().__init__()
+
+        layers = []
+        in_dim = latent_dim
+
+        for _ in range(n_layers):
+            layers.append(nn.Linear(in_dim, style_dim))
+            layers.append(nn.LeakyReLU(0.2))
+            in_dim = style_dim
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, 
+        z: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass of the Mapping Network
+
+        Parameters:
+        -----------
+        z: torch.Tensor
+            Input latent vector of shape (batch_size, latent_dim)
+
+        Returns:
+        --------       
+        torch.Tensor
+            Output style vector of shape (batch_size, style_dim)
+
+        Usage Example:
+        --------------
+        >>> mapping = MappingNetwork(latent_dim=64, style_dim=64, n_layers=4)
+        >>> z = torch.randn(16, 64)  # Batch of 16 latent vectors
+        >>> w = mapping(z)  # Output style vectors of shape (16, 64)
+        """
+        return self.net(z)
+
+
+# AdaIN Layer for Style Modulation
+class AdaIN(nn.Module):
+    def __init__(self, 
+        channels: int,
+        style_dim: int
+    ) -> None:
+        """
+        Adaptive Instance Normalization (AdaIN) layer for style modulation in StyleGAN
+
+        Parameters:
+        -----------
+        channels: int
+            Number of channels in the input feature map (e.g. 128, 64, 32)
+        style_dim: int
+            Dimensionality of the style vector w (e.g. 64)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> adain = AdaIN(channels=128, style_dim=64)
+        >>> x = torch.randn(16, 128, 8, 8)  # Batch of 16 feature maps
+        >>> w = torch.randn(16, 64)  # Batch of 16 style vectors
+        >>> out = adain(x, w)  # Output feature maps of shape (16, 128, 8, 8) modulated by style
+        """
+        super().__init__()
+        self.affine = nn.Linear(style_dim, channels * 2)
+
+    def forward(self, 
+        x: torch.Tensor,
+        w: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass of the AdaIN layer
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input feature map of shape (batch_size, channels, height, width)
+        w: torch.Tensor
+            Style vector of shape (batch_size, style_dim)
+
+        Returns:
+        --------
+        torch.Tensor
+            Output feature map of shape (batch_size, channels, height, width) modulated by the style vector
+
+        Usage Example:
+        --------------
+        >>> adain = AdaIN(channels=128, style_dim=64)
+        >>> x = torch.randn(16, 128, 8, 8)  # Batch of 16 feature maps
+        >>> w = torch.randn(16, 64)  # Batch of 16 style vectors
+        >>> out = adain(x, w)  # Output feature maps of shape (16, 128, 8, 8) modulated by style
+        """
+        # (B, C)
+        style = self.affine(w)
+        scale, bias = style.chunk(2, dim=1)
+
+        scale = scale.unsqueeze(-1).unsqueeze(-1)
+        bias = bias.unsqueeze(-1).unsqueeze(-1)
+
+        mean = x.mean(dim=[2, 3], keepdim=True)
+        std = x.std(dim=[2, 3], keepdim=True).clamp(min=1e-8)
+
+        x = (x - mean) / std
+        return scale * x + bias
+
+
+# Styled Conv Block
+class StyledConvBlock(nn.Module):
+    def __init__(self, 
+        in_c: int,
+        out_c: int, 
+        style_dim: int
+    ) -> None:
+        """
+        Styled Convolutional Block for StyleGAN Generator, consisting of a convolutional layer followed by AdaIN and activation
+
+        Parameters:
+        -----------
+        in_c: int
+            Number of input channels for the convolutional layer (e.g. 128, 64)
+        out_c: int
+            Number of output channels for the convolutional layer (e.g. 128, 64, 32)
+        style_dim: int
+            Dimensionality of the style vector w for AdaIN (e.g. 64)
+
+        Returns:
+        --------
+        None
+
+        Usage Example: 
+        -------------- 
+        >>> block = StyledConvBlock(in_c=128, out_c=64, style_dim=64)
+        >>> x = torch.randn(16, 128, 8, 8)  # Batch of 16 feature maps
+        >>> w = torch.randn(16, 64)  # Batch of 16 style vectors
+        >>> out = block(x, w)  # Output feature maps of shape (16, 64, 8, 8) modulated by style
+        """
+        super().__init__()
+        self.conv = nn.Conv2d(in_c, out_c, 3, padding=1)
+        self.adain = AdaIN(out_c, style_dim)
+        self.act = nn.LeakyReLU(0.2, inplace=True)
+
+        self.noise_weight = nn.Parameter(torch.zeros(1, out_c, 1, 1)) # learned per-channel noise scaling for stochastic variation
+
+    def forward(self, 
+        x: torch.Tensor,
+        w: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass of the Styled Convolutional Block
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input feature map of shape (batch_size, in_c, height, width)
+        w: torch.Tensor
+            Style vector of shape (batch_size, style_dim) for AdaIN modulation
+
+        Returns:
+        --------
+        torch.Tensor
+            Output feature map of shape (batch_size, out_c, height, width) modulated by style and optionally perturbed by noise
+
+        Usage Example:
+        --------------
+        >>> block = StyledConvBlock(in_c=128, out_c=64, style_dim=64)
+        >>> x = torch.randn(16, 128, 8, 8)  # Batch of 16 feature maps
+        >>> w = torch.randn(16, 64)  # Batch of 16 style vectors
+        >>> noise = torch.randn(16, 64, 8, 8)  # Optional noise for stochastic variation
+        >>> out = block(x, w, noise)  # Output feature maps of shape (16, 64, 8, 8) modulated by style and noise
+        """
+        x = self.conv(x)
+
+        # stochastic noise injection (scaled)
+        noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), device=x.device)
+        x = x + self.noise_weight * noise
+
+        x = self.adain(x, w)
+        return self.act(x)
+    
+
+# StyleGAN Generator
+class StyleGANGenerator(nn.Module):
+    def __init__(
+        self,
+        latent_dim: int = 64,
+        style_dim: int = 64,
+        channels: Tuple[int, ...] = (128, 64, 32),
+        image_channels: int = 3
+    ) -> None:
+        """
+        StyleGAN Generator architecture that consists of a mapping network to transform the latent vector into a style vector, 
+        followed by a series of styled convolutional blocks that progressively upsample the feature maps, 
+        and a final convolutional layer to produce the output image
+
+        Parameters:
+        -----------
+        latent_dim: int
+            Dimensionality of the input latent vector z (default: 64)
+        style_dim: int
+            Dimensionality of the style vector w (default: 64)
+        channels: Tuple[int, ...]
+            Tuple specifying the number of channels for each convolutional block (default: (128, 64, 32))
+        image_channels: int
+            Number of channels in the output image (e.g. 3 for RGB, 1 for grayscale, default: 3)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> G = StyleGANGenerator(latent_dim=64, style_dim=64, channels=(128, 64, 32), image_channels=3)
+        >>> z = torch.randn(16, 64)  # Batch of 16 latent vectors
+        >>> images = G(z)  # Output images of shape (16, 3, 32, 32) modulated by style
+        """
+        super().__init__()
+
+        self.mapping = MappingNetwork(latent_dim, style_dim)
+
+        # learned constant input (4x4)
+        self.constant = nn.Parameter(torch.randn(1, channels[0], 4, 4))
+
+        self.blocks = nn.ModuleList()
+
+        in_c = channels[0]
+        for out_c in channels[1:]:
+            self.blocks.append(StyledConvBlock(in_c, out_c, style_dim))
+            in_c = out_c
+
+        self.to_rgb = nn.Conv2d(in_c, image_channels, 1)
+
+    def forward(self, 
+        z: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass of the StyleGAN Generator
+
+        Parameters:
+        -----------
+        z: torch.Tensor
+            Input latent vector of shape (batch_size, latent_dim)
+        
+        Returns:
+        --------
+        torch.Tensor
+            Output images of shape (batch_size, image_channels, height, width) generated by the StyleGAN architecture
+
+        Usage Example:
+        --------------
+        >>> G = StyleGANGenerator(latent_dim=64, style_dim=64, channels=(128, 64, 32), image_channels=3)
+        >>> z = torch.randn(16, 64)  # Batch of 16 latent vectors
+        >>> images = G(z)  # Output images of shape (16, 3, 32, 32) modulated by style
+        """
+        w = self.mapping(z)
+
+        B = z.size(0)
+        x = self.constant.repeat(B, 1, 1, 1)
+
+        for block in self.blocks:
+            x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+            x = block(x, w)
+
+        return torch.tanh(self.to_rgb(x))
+
+
+# StyleDiscriminator
+class StyleGANDiscriminator(nn.Module):
+    def __init__(self,
+        image_channels: int = 3,
+        channels: Tuple[int, ...] = (32, 64, 128)
+    ) -> None:
+        """
+        StyleGAN Discriminator architecture that consists of a series of convolutional blocks that progressively downsample the input image,
+        followed by a final fully connected layer to produce the discriminator output
+
+        Parameters:
+        -----------
+        image_channels: int
+            Number of channels in the input image (e.g. 3 for RGB, 1 for grayscale, default: 3)
+        channels: Tuple[int, ...]
+            Tuple specifying the number of channels for each convolutional block in reverse order compared to the generator (default: (32, 64, 128))
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> D = StyleGANDiscriminator(image_channels=3, channels=(32, 64, 128))
+        >>> images = torch.randn(16, 3, 32, 32)  # Batch of 16 images
+        >>> output = D(images)  # Discriminator output of shape (16, 1)
+        """
+        super().__init__()
+
+        layers = []
+        in_c = image_channels
+
+        for out_c in channels:
+            conv = nn.utils.spectral_norm(nn.Conv2d(in_c, out_c, 4, 2, 1))
+            layers.append(conv)
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            in_c = out_c
+
+        self.conv = nn.Sequential(*layers)
+
+        self.head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels[-1], 1)
+        )
+
+    def forward(self,
+        x: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass of the StyleGAN Discriminator
+
+        Parameters:
+        -----------
+        x: torch.Tensor
+            Input images of shape (batch_size, image_channels, height, width)
+
+        Returns:
+        --------        
+        torch.Tensor
+            Discriminator output of shape (batch_size, 1) representing the real/fake prediction for each input image
+        
+        Usage Example:
+        --------------
+        >>> D = StyleGANDiscriminator(image_channels=3, channels=(32, 64, 128))
+        >>> images = torch.randn(16, 3, 32, 32)  # Batch of 16 images
+        >>> output = D(images)  # Discriminator output of shape (16, 1)
+        """
+        h = self.conv(x)
+        return self.head(h)
+    
+
+# =======================================
 # Generative Adversarial Networks (GANs)
 # =======================================
 @dataclass
 class GANConfig:
-    architecture: Literal["GAN", "CGAN", "DCGAN", "MLP_UnrolledGAN", "DC_UnrolledGAN", "StyleGANs"] = "GAN"
+    architecture: Literal["GAN", "CGAN", "DCGAN", "MLP_UnrolledGAN", "DC_UnrolledGAN", "StyleGAN"] = "GAN"
     loss: Literal["Default", "Wasserstein", "LeastSquare"] = "Default"
     latent_dim: int = 32   
 
     # For MLPs
     input_dim: int = 784    
-    hidden_dims: Tuple[int, ...] = (128, 64)
+    hidden_dims: Tuple[int, ...] = (128, 64) # to put at "conv_channels" for DCGANs and "style_channels" for StyleGANs
 
     # For DCGANs
     image_size: int = 28
-    image_channels: int = 1
+    image_channels: int = 1 # also for StyleGANs
     kernel_size: int = 4
     stride: int = 2
     padding: int = 1
@@ -628,6 +998,9 @@ class GANConfig:
     lsgan_lambda: float = 0.5
 
     # For StyleGANs
+    style_dim: int = 64
+    # also use latent_dim for the mapping network input
+    # and image_channels for the final output channels of the generator and input channels of the discriminator
 
     # Regularization
     dropout: Optional[float] = None
@@ -787,7 +1160,10 @@ class GAN(nn.Module):
         self.device = device
 
         # Select architecture
-        if cfg.architecture == "DCGAN":
+        if cfg.architecture == "StyleGAN":
+            self.G = StyleGANGenerator(cfg.latent_dim, cfg.style_dim, cfg.hidden_dims, cfg.image_channels)
+            self.D = StyleGANDiscriminator(cfg.image_channels, cfg.hidden_dims[::-1])
+        elif cfg.architecture == "DCGAN":
             self.G = DCGANGenerator(cfg.image_size, cfg.image_channels, cfg.hidden_dims, cfg.latent_dim, cfg.kernel_size, cfg.stride, cfg.padding, cfg.dropout, cfg.batch_norm)
             self.D = DCGANDiscriminator(cfg.image_size, cfg.image_channels, cfg.hidden_dims[::-1], cfg.kernel_size, cfg.stride, cfg.padding, cfg.spectral_norm_on)
         elif cfg.architecture == "CGAN":
@@ -974,7 +1350,7 @@ class GAN(nn.Module):
         if y is not None:
             y = y.to(self.device)
 
-        if self.cfg.architecture not in ["DCGAN", "DC_UnrolledGAN"]:
+        if self.cfg.architecture not in ["DCGAN", "DC_UnrolledGAN", "StyleGAN"]:
             x = x.view(x.size(0), -1)
 
         batch_size = x.size(0)
@@ -1019,7 +1395,7 @@ class GAN(nn.Module):
         z = torch.randn(batch_size, self.cfg.latent_dim, device=self.device)
 
         n_critic = 1
-        if self.cfg.architecture == "DCGAN":
+        if self.cfg.architecture in ["DCGAN", "DC_UnrolledGAN", "StyleGAN"]:
             n_critic = 2
         if self.cfg.loss == "Wasserstein":
             n_critic = self.cfg.n_critic 
@@ -1170,7 +1546,7 @@ class GAN(nn.Module):
             samples = G(z)
         
         # Output formatting based on architecture
-        if self.cfg.architecture == "DCGAN":
+        if self.cfg.architecture in ["DCGAN", "DC_UnrolledGAN", "StyleGAN"]:
             return samples.cpu()
 
         # MLP / tabular (keep flat)
@@ -1179,120 +1555,6 @@ class GAN(nn.Module):
 
         # fallback (image reshape)
         return samples.view(n, 1, self.cfg.image_size, self.cfg.image_size).cpu()
-
-
-"""
-Style-based GANs (StyleGANs)
-
-# 1. Mapping Network
-class MappingNetwork(nn.Module):
-    def __init__(self, latent_dim=32, style_dim=32, n_layers=4):
-        super().__init__()
-        layers = []
-        for _ in range(n_layers):
-            layers.append(nn.Linear(latent_dim, style_dim))
-            layers.append(nn.LeakyReLU(0.2))
-            latent_dim = style_dim
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, z):
-        return self.net(z)
-
-# 2. Style Modulation (core trick)
-This replaces BatchNorm completely.
-class AdaIN(nn.Module):
-    def __init__(self, channels, style_dim):
-        super().__init__()
-        self.fc = nn.Linear(style_dim, channels * 2)
-
-    def forward(self, x, w):
-        style = self.fc(w)
-        scale, bias = style.chunk(2, dim=1)
-
-        scale = scale.unsqueeze(-1).unsqueeze(-1)
-        bias = bias.unsqueeze(-1).unsqueeze(-1)
-
-        mean = x.mean([2, 3], keepdim=True)
-        std = x.std([2, 3], keepdim=True) + 1e-8
-
-        x = (x - mean) / std
-        return scale * x + bias
-
-# 3. Styled Conv Block
-class StyledConvBlock(nn.Module):
-    def __init__(self, in_c, out_c, style_dim):
-        super().__init__()
-        self.conv = nn.Conv2d(in_c, out_c, 3, padding=1)
-        self.adain = AdaIN(out_c, style_dim)
-        self.act = nn.LeakyReLU(0.2)
-
-    def forward(self, x, w, noise=None):
-        x = self.conv(x)
-
-        if noise is not None:
-            x = x + noise
-
-        x = self.adain(x, w)
-        return self.act(x)
-
-# 4. StyleGAN Generator
-class StyleGANGenerator(nn.Module):
-    def __init__(self, latent_dim=32, style_dim=32, channels=[128, 64, 32], image_channels=1):
-        super().__init__()
-
-        self.mapping = MappingNetwork(latent_dim, style_dim)
-
-        self.constant = nn.Parameter(torch.randn(1, channels[0], 4, 4))
-
-        self.blocks = nn.ModuleList()
-        in_c = channels[0]
-
-        for out_c in channels:
-            self.blocks.append(StyledConvBlock(in_c, out_c, style_dim))
-            in_c = out_c
-
-        self.to_rgb = nn.Conv2d(in_c, image_channels, 1)
-
-    def forward(self, z):
-        w = self.mapping(z)
-
-        batch_size = z.size(0)
-        x = self.constant.repeat(batch_size, 1, 1, 1)
-
-        for block in self.blocks:
-            noise = torch.randn_like(x)
-            x = block(x, w, noise)
-            x = F.interpolate(x, scale_factor=2, mode="bilinear")
-
-        return torch.tanh(self.to_rgb(x))
-
-# 5. Discriminator (keep it simple but strong)
-StyleGAN does not need fancy discriminator tricks.
-class StyleGANDiscriminator(nn.Module):
-    def __init__(self, image_channels=1, channels=[32, 64, 128]):
-        super().__init__()
-
-        layers = []
-        in_c = image_channels
-
-        for out_c in channels:
-            layers.append(nn.utils.spectral_norm(
-                nn.Conv2d(in_c, out_c, 4, 2, 1)
-            ))
-            layers.append(nn.LeakyReLU(0.2))
-            in_c = out_c
-
-        self.conv = nn.Sequential(*layers)
-
-        self.fc = nn.utils.spectral_norm(
-            nn.Linear(channels[-1] * 4 * 4, 1)
-        )
-
-    def forward(self, x):
-        h = self.conv(x)
-        h = h.view(h.size(0), -1)
-        return self.fc(h)
-"""
 
 
 # === FILE: NRT/NRT_GANs/test.py ===
