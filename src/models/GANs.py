@@ -591,7 +591,7 @@ class CGANDiscriminator(nn.Module):
 
 
 # =======================================
-# StyleGAN Generator and Discriminator (simplified version)
+# StyleGAN Generator and Discriminator (not the most complicated version, but a simplified one)
 # =======================================
 # Mapping Network 
 class MappingNetwork(nn.Module):
@@ -687,7 +687,7 @@ class AdaIN(nn.Module):
         >>> out = adain(x, w)  # Output feature maps of shape (16, 128, 8, 8) modulated by style
         """
         super().__init__()
-        self.affine = nn.Linear(style_dim, channels * 2)
+        self.style = nn.Linear(style_dim, channels * 2)
 
     def forward(self, 
         x: torch.Tensor,
@@ -716,7 +716,7 @@ class AdaIN(nn.Module):
         >>> out = adain(x, w)  # Output feature maps of shape (16, 128, 8, 8) modulated by style
         """
         # (B, C)
-        style = self.affine(w)
+        style = self.style(w)
         scale, bias = style.chunk(2, dim=1)
 
         scale = scale.unsqueeze(-1).unsqueeze(-1)
@@ -734,7 +734,11 @@ class StyledConvBlock(nn.Module):
     def __init__(self, 
         in_c: int,
         out_c: int, 
-        style_dim: int
+        style_dim: int, 
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+        noise_weight: float = 0.0
     ) -> None:
         """
         Styled Convolutional Block for StyleGAN Generator, consisting of a convolutional layer followed by AdaIN and activation
@@ -747,6 +751,14 @@ class StyledConvBlock(nn.Module):
             Number of output channels for the convolutional layer (e.g. 128, 64, 32)
         style_dim: int
             Dimensionality of the style vector w for AdaIN (e.g. 64)
+        kernel_size: int
+            Kernel size for the convolutional layer (default: 3)    
+        stride: int
+            Stride for the convolutional layer (default: 1)
+        padding: int
+            Padding for the convolutional layer (default: 1)
+        noise_weight: float
+            Initial weight for noise injection (default: 0.0, no noise)
 
         Returns:
         --------
@@ -760,15 +772,17 @@ class StyledConvBlock(nn.Module):
         >>> out = block(x, w)  # Output feature maps of shape (16, 64, 8, 8) modulated by style
         """
         super().__init__()
-        self.conv = nn.Conv2d(in_c, out_c, 3, padding=1)
+        self.conv = nn.Conv2d(in_c, out_c, kernel_size=kernel_size, stride=stride, padding=padding)
         self.adain = AdaIN(out_c, style_dim)
         self.act = nn.LeakyReLU(0.2, inplace=True)
 
-        self.noise_weight = nn.Parameter(torch.zeros(1, out_c, 1, 1)) # learned per-channel noise scaling for stochastic variation
+        self.noise_weight = noise_weight
+        self.noise = nn.Parameter(torch.zeros(1, out_c, 1, 1)) # learned per-channel noise scaling for stochastic variation
 
     def forward(self, 
         x: torch.Tensor,
-        w: torch.Tensor
+        w: torch.Tensor, 
+        use_noise: bool = True
     ) -> torch.Tensor:
         """
         Forward pass of the Styled Convolutional Block
@@ -779,6 +793,8 @@ class StyledConvBlock(nn.Module):
             Input feature map of shape (batch_size, in_c, height, width)
         w: torch.Tensor
             Style vector of shape (batch_size, style_dim) for AdaIN modulation
+        use_noise: bool
+            Whether to apply stochastic noise injection (default: True)
 
         Returns:
         --------
@@ -797,7 +813,9 @@ class StyledConvBlock(nn.Module):
 
         # stochastic noise injection (scaled)
         noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), device=x.device)
-        x = x + self.noise_weight * noise
+
+        if use_noise:
+            x = x + self.noise_weight * torch.randn_like(x) + self.noise_weight * self.noise
 
         x = self.adain(x, w)
         return self.act(x)
@@ -810,12 +828,21 @@ class StyleGANGenerator(nn.Module):
         latent_dim: int = 64,
         style_dim: int = 64,
         channels: Tuple[int, ...] = (128, 64, 32),
-        image_channels: int = 3
+        image_channels: int = 3, 
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+        noise_weight: float = 0.05,
+        style_mixing_prob: float = 0.9,
+        use_style_mixing: bool = True,
+        use_noise: bool = True,
+        upsample_mode: Literal["nearest", "bilinear"] = "bilinear"
     ) -> None:
         """
         StyleGAN Generator architecture that consists of a mapping network to transform the latent vector into a style vector, 
         followed by a series of styled convolutional blocks that progressively upsample the feature maps, 
-        and a final convolutional layer to produce the output image
+        and a final convolutional layer to produce the output image. 
+        The generator also supports style mixing and stochastic noise injection for improved diversity.
 
         Parameters:
         -----------
@@ -827,6 +854,22 @@ class StyleGANGenerator(nn.Module):
             Tuple specifying the number of channels for each convolutional block (default: (128, 64, 32))
         image_channels: int
             Number of channels in the output image (e.g. 3 for RGB, 1 for grayscale, default: 3)
+        kernel_size: int
+            Kernel size for convolutional layers (default: 3)
+        stride: int
+            Stride for convolutional layers (default: 1)
+        padding: int
+            Padding for convolutional layers (default: 1)
+        noise_weight: float
+            Initial weight for noise injection in styled convolutional blocks (default: 0.0, no noise)
+        style_mixing_prob: float
+            Probability of applying style mixing during training (default: 0.9)
+        use_style_mixing: bool
+            Whether to apply style mixing during training (default: True)
+        use_noise: bool
+            Whether to apply stochastic noise injection in styled convolutional blocks (default: True)
+        upsample_mode: Literal["nearest", "bilinear"]
+            Upsampling mode for feature maps (default: "bilinear")
 
         Returns:
         --------
@@ -849,10 +892,15 @@ class StyleGANGenerator(nn.Module):
 
         in_c = channels[0]
         for out_c in channels[1:]:
-            self.blocks.append(StyledConvBlock(in_c, out_c, style_dim))
+            self.blocks.append(StyledConvBlock(in_c, out_c, style_dim, kernel_size, stride, padding, noise_weight))
             in_c = out_c
 
         self.to_rgb = nn.Conv2d(in_c, image_channels, 1)
+
+        self.style_mixing_prob = style_mixing_prob
+        self.use_style_mixing = use_style_mixing
+        self.use_noise = use_noise
+        self.upsample_mode = upsample_mode
 
     def forward(self, 
         z: torch.Tensor
@@ -876,14 +924,18 @@ class StyleGANGenerator(nn.Module):
         >>> z = torch.randn(16, 64)  # Batch of 16 latent vectors
         >>> images = G(z)  # Output images of shape (16, 3, 32, 32) modulated by style
         """
-        w = self.mapping(z)
-
         B = z.size(0)
+
+        # two styles for style mixing
+        w1 = self.mapping(z)
+        w2 = self.mapping(torch.randn_like(z))
+        mix = (torch.rand(1).item() < self.style_mixing_prob) and self.use_style_mixing
         x = self.constant.repeat(B, 1, 1, 1)
 
-        for block in self.blocks:
-            x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
-            x = block(x, w)
+        for i, block in enumerate(self.blocks):
+            x = F.interpolate(x, scale_factor=2, mode=self.upsample_mode, align_corners=False if self.upsample_mode == "bilinear" else None)
+            w = w2 if mix and i >= len(self.blocks) // 2 else w1
+            x = block(x, w, use_noise=self.use_noise)
 
         return torch.tanh(self.to_rgb(x))
 
@@ -892,7 +944,10 @@ class StyleGANGenerator(nn.Module):
 class StyleGANDiscriminator(nn.Module):
     def __init__(self,
         image_channels: int = 3,
-        channels: Tuple[int, ...] = (32, 64, 128)
+        channels: Tuple[int, ...] = (32, 64, 128), 
+        kernel_size: int = 4,
+        stride: int = 2,
+        padding: int = 1
     ) -> None:
         """
         StyleGAN Discriminator architecture that consists of a series of convolutional blocks that progressively downsample the input image,
@@ -904,6 +959,12 @@ class StyleGANDiscriminator(nn.Module):
             Number of channels in the input image (e.g. 3 for RGB, 1 for grayscale, default: 3)
         channels: Tuple[int, ...]
             Tuple specifying the number of channels for each convolutional block in reverse order compared to the generator (default: (32, 64, 128))
+        kernel_size: int
+            Kernel size for convolutional layers (default: 4)
+        stride: int
+            Stride for convolutional layers (default: 2)
+        padding: int
+            Padding for convolutional layers (default: 1)
 
         Returns:
         --------
@@ -921,7 +982,7 @@ class StyleGANDiscriminator(nn.Module):
         in_c = image_channels
 
         for out_c in channels:
-            conv = nn.utils.spectral_norm(nn.Conv2d(in_c, out_c, 4, 2, 1))
+            conv = nn.utils.spectral_norm(nn.Conv2d(in_c, out_c, kernel_size, stride, padding))
             layers.append(conv)
             layers.append(nn.LeakyReLU(0.2, inplace=True))
             in_c = out_c
@@ -976,10 +1037,10 @@ class GANConfig:
     # For DCGANs
     image_size: int = 28
     image_channels: int = 1 # also for StyleGANs
-    kernel_size: int = 4
-    stride: int = 2
-    padding: int = 1
-    noise_coef: float = 0.03
+    kernel_size: int = 4 # also for StyleGANs discriminator
+    stride: int = 2 # also for StyleGANs discriminator
+    padding: int = 1 # also for StyleGANs discriminator
+    noise_coef: float = 0.03 # also for StyleGANs
 
     # For CGANs
     num_classes: int = 10
@@ -999,6 +1060,11 @@ class GANConfig:
     style_dim: int = 64
     # also use latent_dim for the mapping network input
     # and image_channels for the final output channels of the generator and input channels of the discriminator
+    kernel_size_style_gen: int = 3
+    stride_style_gen: int = 1
+    padding_style_gen: int = 1
+    noise_weight: float = 0.05
+    mixing_prob: float = 0.9
 
     # Regularization
     dropout: Optional[float] = None
@@ -1159,8 +1225,8 @@ class GAN(nn.Module):
 
         # Select architecture
         if cfg.architecture == "StyleGAN":
-            self.G = StyleGANGenerator(cfg.latent_dim, cfg.style_dim, cfg.hidden_dims, cfg.image_channels)
-            self.D = StyleGANDiscriminator(cfg.image_channels, cfg.hidden_dims[::-1])
+            self.G = StyleGANGenerator(cfg.latent_dim, cfg.style_dim, cfg.hidden_dims, cfg.image_channels, cfg.kernel_size_style_gen, cfg.stride_style_gen, cfg.padding_style_gen, cfg.noise_weight, cfg.mixing_prob)
+            self.D = StyleGANDiscriminator(cfg.image_channels, cfg.hidden_dims[::-1], cfg.kernel_size, cfg.stride, cfg.padding)
         elif cfg.architecture == "DCGAN":
             self.G = DCGANGenerator(cfg.image_size, cfg.image_channels, cfg.hidden_dims, cfg.latent_dim, cfg.kernel_size, cfg.stride, cfg.padding, cfg.dropout, cfg.batch_norm)
             self.D = DCGANDiscriminator(cfg.image_size, cfg.image_channels, cfg.hidden_dims[::-1], cfg.kernel_size, cfg.stride, cfg.padding, cfg.spectral_norm_on)
@@ -1177,7 +1243,10 @@ class GAN(nn.Module):
         self.ema_G = copy.deepcopy(self.G).eval() if cfg.is_ema else None
 
         self.opt_G = torch.optim.Adam(self.G.parameters(), lr=cfg.learning_rate, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
-        self.opt_D = torch.optim.Adam(self.D.parameters(), lr=cfg.learning_rate, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
+        if cfg.architecture == "StyleGAN": # reduce the learning rate of the discriminator
+            self.opt_D = torch.optim.Adam(self.D.parameters(), lr=cfg.learning_rate * 0.4, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
+        else:
+            self.opt_D = torch.optim.Adam(self.D.parameters(), lr=cfg.learning_rate, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
 
     def gradient_penalty(self, 
         real: torch.Tensor,
@@ -1348,12 +1417,14 @@ class GAN(nn.Module):
         if y is not None:
             y = y.to(self.device)
 
-        if self.cfg.architecture not in ["DCGAN", "DC_UnrolledGAN", "StyleGAN"]:
+        is_image_model = self.cfg.architecture in ["DCGAN", "DC_UnrolledGAN", "StyleGAN"]
+
+        if not is_image_model:
             x = x.view(x.size(0), -1)
 
         batch_size = x.size(0)
 
-        if self.cfg.architecture == "DCGAN":
+        if is_image_model and self.cfg.noise_coef > 0:
             x = x + self.cfg.noise_coef * torch.randn_like(x)
 
         # =======================
@@ -1393,7 +1464,7 @@ class GAN(nn.Module):
         z = torch.randn(batch_size, self.cfg.latent_dim, device=self.device)
 
         n_critic = 1
-        if self.cfg.architecture in ["DCGAN", "DC_UnrolledGAN", "StyleGAN"]:
+        if self.cfg.architecture in ["DCGAN", "DC_UnrolledGAN"]:
             n_critic = 2
         if self.cfg.loss == "Wasserstein":
             n_critic = self.cfg.n_critic 
@@ -1411,6 +1482,18 @@ class GAN(nn.Module):
                 fake_out = self.D(fake)
 
             D_loss = self.discriminator_loss(real_out, fake_out, x, fake)
+
+            # R1 gradient penalty (critical for StyleGAN stability)
+            if self.cfg.architecture == "StyleGAN":
+                x.requires_grad_(True)
+                real_pred = self.D(x)
+                grad = torch.autograd.grad(
+                    outputs=real_pred.sum(),
+                    inputs=x,
+                    create_graph=True
+                )[0]
+                r1_penalty = grad.view(batch_size, -1).pow(2).sum(1).mean()
+                D_loss = D_loss + 10.0 * r1_penalty
 
             self.opt_D.zero_grad()
             D_loss.backward()
