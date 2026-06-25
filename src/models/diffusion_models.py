@@ -64,6 +64,7 @@ class DiffusionConfig:
 
     beta_start: float = 1e-4
     beta_end: float = 0.02
+    s: float = 0.008 # small offset for cosine schedule
 
     # ======================
     # Training
@@ -347,7 +348,7 @@ class CNN(nn.Module):
 
     def forward(self, 
         x: torch.Tensor,
-        t_emb: torch.Tensor = None
+        t_emb: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass for the CNN model
@@ -372,6 +373,9 @@ class CNN(nn.Module):
         >>> output = cnn(x, t_emb)  # Forward pass
         """ 
         h = x
+        if t_emb is not None:
+            t_emb = t_emb.to(device=h.device, dtype=h.dtype)
+
         for idx, conv in enumerate(self.convs):
             h = conv(h)
             te = self.time_projs[idx](t_emb).unsqueeze(-1).unsqueeze(-1) # project time embedding to channels and add (broadcast over spatial dims)
@@ -615,12 +619,16 @@ class DownBlock(nn.Module):
         >>> output, skip = down_block(x, t_emb)  # Forward pass
         """
         super().__init__()
-        self.res_blocks = nn.ModuleList([
-            ResBlock(in_c if i == 0 else out_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups)
-            for i in range(num_res_blocks)
-        ])
+
+        self.res_blocks = nn.ModuleList()
+        current_c = in_c
+        for _ in range(num_res_blocks):
+            self.res_blocks.append(ResBlock(current_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups))
+            current_c = out_c
+        
         self.attn = AttentionBlock(out_c, num_heads=num_heads, num_groups=num_groups) if use_attn else nn.Identity()
-        self.down = nn.Conv2d(out_c, out_c, kernel_size=down_kernel_size, stride=down_stride, padding=down_padding)
+        
+        self.downsample = nn.Conv2d(out_c, out_c, kernel_size=down_kernel_size, stride=down_stride, padding=down_padding)
 
     def forward(self, 
         x: torch.Tensor,
@@ -648,17 +656,18 @@ class DownBlock(nn.Module):
         >>> t_emb = torch.randn(16, 128).to("cuda")  # Time embeddings
         >>> output, skip = down_block(x, t_emb)  # Forward pass
         """
-        for res in self.res_blocks:
-            x = res(x, t)
+        for block in self.res_blocks:
+            x = block(x, t)
         x = self.attn(x)
         skip = x
-        x = self.down(x)
+        x = self.downsample(x)
         return x, skip
 
 
 class UpBlock(nn.Module):
     def __init__(self, 
         in_c: int, 
+        skip_c: int,
         out_c: int, 
         time_dim: int,
         use_attn: bool = False, 
@@ -680,6 +689,8 @@ class UpBlock(nn.Module):
         -----------
         in_c: int
             Number of input channels
+        skip_c: int
+            Number of channels from the skip connection (from the corresponding downsampling block)
         out_c: int
             Number of output channels
         time_dim: int
@@ -720,11 +731,15 @@ class UpBlock(nn.Module):
         >>> output = up_block(x, skip, t_emb)  # Forward pass
         """
         super().__init__()
-        self.up = nn.ConvTranspose2d(in_c, out_c, kernel_size=up_kernel_size, stride=up_stride, padding=up_padding)
-        self.res_blocks = nn.ModuleList([
-            ResBlock(out_c * 2 if i == 0 else out_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups)
-            for i in range(num_res_blocks)
-        ])
+
+        self.upsample = nn.ConvTranspose2d(in_c, out_c, kernel_size=up_kernel_size, stride=up_stride, padding=up_padding)
+       
+        self.res_blocks = nn.ModuleList()
+        current_c = out_c + skip_c
+        for _ in range(num_res_blocks):
+            self.res_blocks.append(ResBlock(current_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups))
+            current_c = out_c
+        
         self.attn = AttentionBlock(out_c, num_heads=num_heads, num_groups=num_groups) if use_attn else nn.Identity()
 
     def forward(self, 
@@ -757,10 +772,14 @@ class UpBlock(nn.Module):
         >>> t_emb = torch.randn(16, 128).to("cuda")  # Time embeddings
         >>> output = up_block(x, skip, t_emb)  # Forward pass
         """
-        x = self.up(x)
+        x = self.upsample(x)
+
+        if x.shape[-2:] != skip.shape[-2:]: # Safety if dimensions differs
+            x = F.interpolate(x, size=skip.shape[-2:], mode="nearest")
+
         x = torch.cat([x, skip], dim=1)
-        for res in self.res_blocks:
-            x = res(x, t)
+        for block in self.res_blocks:
+            x = block(x, t)
         x = self.attn(x)
         return x
 
@@ -863,16 +882,19 @@ class UNet(nn.Module):
 
         self.time_emb = TimeEmbedding(time_emb_dim, time_width_coef)
         channels = [base_channels * m for m in channel_mults]
+
+        self.skip_channels = []
         
         self.init_conv = nn.Conv2d(image_channels, channels[0], kernel_size=kernel_size, stride=stride, padding=padding)
 
         # Encoder / Downsampling
         self.downs = nn.ModuleList()
         in_channel = channels[0]
-        for i, channel in enumerate(channels):
+        for i, out_c in enumerate(channels):
             use_attn = (image_size // (2 ** i)) in attention_resolutions and use_attention
-            self.downs.append(DownBlock(in_channel, channel, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, num_heads=num_heads, num_res_blocks=num_res_blocks_down, down_kernel_size=down_kernel_size, down_stride=down_stride, down_padding=down_padding))
-            in_channel = channel
+            self.downs.append(DownBlock(in_channel, out_c, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, num_heads=num_heads, num_res_blocks=num_res_blocks_down, down_kernel_size=down_kernel_size, down_stride=down_stride, down_padding=down_padding))
+            self.skip_channels.append(out_c)
+            in_channel = out_c
 
         # Bottleneck / Middle
         self.mid1 = nn.ModuleList([
@@ -887,10 +909,11 @@ class UNet(nn.Module):
 
         # Decoder / Upsampling
         self.ups = nn.ModuleList()
-        for i, channel in reversed(list(enumerate(channels))):
+        for i, out_c in reversed(list(enumerate(channels))):
+            skip_c = self.skip_channels.pop()
             use_attn = (image_size // (2 ** i)) in attention_resolutions and use_attention
-            self.ups.append(UpBlock(in_channel, channel, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, num_heads=num_heads, num_res_blocks=num_res_blocks_up, up_kernel_size=up_kernel_size, up_stride=up_stride, up_padding=up_padding))
-            in_channel = channel
+            self.ups.append(UpBlock(in_channel, skip_c, out_c, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, num_heads=num_heads, num_res_blocks=num_res_blocks_up, up_kernel_size=up_kernel_size, up_stride=up_stride, up_padding=up_padding))
+            in_channel = out_c
 
         self.final = nn.Conv2d(in_channel, image_channels, 1)
 
@@ -1065,7 +1088,7 @@ class LatentAutoEncoder(nn.Module):
 class EMA:
     def __init__(self, 
         model: nn.Module,
-        ema_decay: float = 0.9999
+        decay: float = 0.9999
     ) -> None:
         """
         Exponential Moving Average (EMA) for model parameters, 
@@ -1075,7 +1098,7 @@ class EMA:
         -----------
         model: nn.Module
             The model whose parameters will be tracked with EMA
-        ema_decay: float
+        decay: float
             Decay rate for the EMA (default: 0.9999)
 
         Returns:
@@ -1085,10 +1108,10 @@ class EMA:
         Usage Example:
         --------------
         >>> model = UNet(time_emb_dim=128, image_channels=3, image_size=32)
-        >>> ema = EMA(model, ema_decay=0.9999)
+        >>> ema = EMA(model, decay=0.9999)
         """
         self.model = model
-        self.ema_decay = ema_decay
+        self.decay = decay
         self.shadow = {k: v.clone().detach() for k, v in model.state_dict().items()}
 
     @torch.no_grad()
@@ -1107,15 +1130,15 @@ class EMA:
         Usage Example:
         --------------
         >>> model = UNet(time_emb_dim=128, image_channels=3, image_size=32)
-        >>> ema = EMA(model, ema_decay=0.9999)
+        >>> ema = EMA(model, decay=0.9999)
         >>> # During training loop
         >>> for data in dataloader:
         >>>     # ... training steps ...
         >>>     ema.update()  # Update EMA after each training step
         """
         for name, param in self.model.state_dict().items():
-            self.shadow[name].mul_(self.ema_decay)
-            self.shadow[name].add_(param, alpha=1 - self.ema_decay)
+            self.shadow[name].mul_(self.decay)
+            self.shadow[name].add_(param, alpha=1 - self.decay)
 
     def apply_shadow(self) -> None:
         """
@@ -1132,7 +1155,7 @@ class EMA:
         Usage Example:
         --------------
         >>> model = UNet(time_emb_dim=128, image_channels=3, image_size=32)
-        >>> ema = EMA(model, ema_decay=0.9999)
+        >>> ema = EMA(model, decay=0.9999)
         >>> # After training is complete
         >>> ema.apply_shadow()  # Apply EMA parameters to the model for evaluation or inference
         """
@@ -1154,7 +1177,7 @@ class EMA:
         Usage Example:
         --------------
         >>> model = UNet(time_emb_dim=128, image_channels=3, image_size=32)
-        >>> ema = EMA(model, ema_decay=0.9999)
+        >>> ema = EMA(model, decay=0.9999)
         >>> # After applying EMA parameters for evaluation
         >>> ema.restore()  # Restore original model parameters for further training or evaluation
         """
@@ -1201,6 +1224,7 @@ class DiffusionModel:
             beta_schedule=cfg.beta_schedule,
             beta_start=cfg.beta_start,
             beta_end=cfg.beta_end, 
+            s=cfg.s,
             device=self.device
         )
 
@@ -1274,7 +1298,7 @@ class DiffusionModel:
             weight_decay=cfg.weight_decay
         )
 
-        self.ema = EMA(self.model, ema_decay=cfg.ema_decay) if cfg.use_ema else None
+        self.ema = EMA(self.model, decay=cfg.ema_decay) if cfg.use_ema else None
 
     # ======================
     # Forward process (diffusion)
