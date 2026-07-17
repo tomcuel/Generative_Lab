@@ -13,7 +13,10 @@ from torch.utils.data import DataLoader
 # ===========================
 # Imports
 # ===========================
-from src.data.load import load_cifar10
+from src.data.load import (
+    load_mnist,
+    load_cifar10
+)
 from src.data.utils import plot_images
 from src.models.diffusion_models import (
     DiffusionConfig, 
@@ -313,31 +316,1170 @@ def test_ema():
 # ===========================
 # Test DiffusionModel on MNIST with CNN
 # ===========================
+def test_diffusion_model_mnist_cnn():
+    """
+    Test the DiffusionModel on MNIST dataset using a simple CNN architecture.
+
+    This function initializes the DiffusionModel with a CNN backbone, 
+    trains it on the MNIST dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on MNIST with CNN")
+    print_subsection("Load MNIST dataset")
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=64, train=True, flatten=False)
+    # only keep a small portion 
+    subset_size = 1000
+    mnist_loader = torch.utils.data.DataLoader(torch.utils.data.Subset(mnist_loader.dataset, range(subset_size)), batch_size=64, shuffle=True)
+
+    # Plot real data distribution
+    first_numbers = next(iter(mnist_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_numbers.shape)
+    plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR, "mnist_real.png"), title="Real MNIST Samples")
+
+    print_subsection("Initialize DiffusionModel with CNN")
+    config = DiffusionConfig(
+        # model 
+        model_type="cnn",
+        loss="mse",
+
+        num_classes=None,  # No conditional input for this test
+
+        image_size=28,
+        image_channels=1,
+
+        base_channels=16,
+        channel_mults=[1, 2],
+
+        time_emb_dim=64,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=False,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        use_batch_norm=False,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0,
+        batch_size=64,
+
+        # sampling
+        use_ddim=False,
+        use_ema=False,
+
+        # latent diffusion
+        use_latent_diffusion=False
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "dropout": config.dropout,
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "use_batch_norm": config.use_batch_norm,
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "use_ema": config.use_ema,
+        "use_latent_diffusion": config.use_latent_diffusion,
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    # Initialize the DiffusionModel
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    # Train the model on MNIST
+    print_subsection("Train DiffusionModel on MNIST")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(mnist_loader, epochs)
+
+    # Sample images from the trained model
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sampled_images = diffusion_model.sample(n_samples)
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_mnist_cnn.png"), title="Sampled MNIST Images")
 
 
 # ===========================
-# Test DiffusionModel on MNIST with ResUNet
+# Test DiffusionModel on MNIST with ResUNet (without attention) + l1 loss
 # ===========================
+def test_diffusion_model_mnist_resunet():
+    """
+    Test the DiffusionModel on MNIST dataset using a ResUNet architecture without attention and with l1 loss.
+
+    This function initializes the DiffusionModel with a ResUNet backbone, 
+    trains it on the MNIST dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on MNIST with ResUNet")
+    print_subsection("Load MNIST dataset")
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=64, train=True, flatten=False)
+    # only keep a small portion 
+    subset_size = 1000
+    mnist_loader = torch.utils.data.DataLoader(torch.utils.data.Subset(mnist_loader.dataset, range(subset_size)), batch_size=64, shuffle=True)
+
+    # Plot real data distribution
+    first_numbers = next(iter(mnist_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_numbers.shape)
+    plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR, "mnist_real.png"), title="Real MNIST Samples")
+
+    print_subsection("Initialize DiffusionModel with ResUNet")
+    config = DiffusionConfig(
+        # model
+        model_type="res_unet",
+        loss="l1",
+
+        num_classes=None,  # No conditional input for this test
+
+        image_size=28,
+        image_channels=1,
+
+        base_channels=32,
+        channel_mults=[1, 2],
+
+        time_emb_dim=128,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=False,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        num_groups=8,
+        eps_groupnorm=1e-5,
+
+        down_kernel_size=4,
+        down_stride=2,
+        down_padding=1,
+        down_num_res_blocks=1,
+        up_kernel_size=4,
+        up_stride=2,
+        up_padding=1,
+        up_num_res_blocks=1,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0, 
+        batch_size=64,
+
+        # sampling
+        use_ddim=False,
+        use_ema=False,
+
+        # latent diffusion
+        use_latent_diffusion=False
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "dropout": config.dropout, 
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "num_groups": config.num_groups, 
+        "eps_groupnorm": config.eps_groupnorm,
+        "down_kernel_size": config.down_kernel_size, 
+        "down_stride": config.down_stride, 
+        "down_padding": config.down_padding, 
+        "down_num_res_blocks": config.down_num_res_blocks, 
+        "up_kernel_size": config.up_kernel_size, 
+        "up_stride": config.up_stride, 
+        "up_padding": config.up_padding, 
+        "up_num_res_blocks": config.up_num_res_blocks, 
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "use_ema": config.use_ema,
+        "use_latent_diffusion": config.use_latent_diffusion,
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    # Initialize the DiffusionModel
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    # Train the model on MNIST
+    print_subsection("Train DiffusionModel on MNIST")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(mnist_loader, epochs)
+
+    # Sample images from the trained model
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sampled_images = diffusion_model.sample(n_samples)
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_mnist_resunet.png"), title="Sampled MNIST Images")
 
 
 # ===========================
-# Test DiffusionModel on MNIST with Latent Diffusion DDPM
+# Test DiffusionModel on MNIST with ResUNet (with attention) + DDIM sampling
 # ===========================
+def test_diffusion_model_mnist_resunet_attention_ddim():
+    """
+    Test the DiffusionModel on MNIST dataset using a ResUNet architecture with attention and DDIM sampling.
+
+    This function initializes the DiffusionModel with a ResUNet backbone, 
+    trains it on the MNIST dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on MNIST with ResUNet + Attention + DDIM")
+    print_subsection("Load MNIST dataset")
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=64, train=True, flatten=False)
+    # only keep a small portion 
+    subset_size = 1000
+    mnist_loader = torch.utils.data.DataLoader(torch.utils.data.Subset(mnist_loader.dataset, range(subset_size)), batch_size=64, shuffle=True)
+
+    # Plot real data distribution
+    first_numbers = next(iter(mnist_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_numbers.shape)
+    plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR, "mnist_real.png"), title="Real MNIST Samples")
+
+    print_subsection("Initialize DiffusionModel with ResUNet + Attention + DDIM")
+    config = DiffusionConfig(
+        # model
+        model_type="res_unet",
+        loss="l1",
+
+        num_classes=None,  # No conditional input for this test
+
+        image_size=28,
+        image_channels=1,
+
+        base_channels=32,
+        channel_mults=[1, 2],
+
+        time_emb_dim=128,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=True,
+        attention_resolutions=(14,), # should be among the image_size / 2**i
+        num_heads=4,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        num_groups=8,
+        eps_groupnorm=1e-5,
+
+        down_kernel_size=4,
+        down_stride=2,
+        down_padding=1,
+        down_num_res_blocks=1,
+        up_kernel_size=4,
+        up_stride=2,
+        up_padding=1,
+        up_num_res_blocks=1,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0, 
+        batch_size=64,
+
+        # sampling
+        use_ddim=True,
+        ddim_steps=25,
+        use_ema=False,
+
+        # latent diffusion
+        use_latent_diffusion=False
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "attention_resolutions": config.attention_resolutions,
+        "num_heads": config.num_heads,
+        "dropout": config.dropout, 
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "num_groups": config.num_groups, 
+        "eps_groupnorm": config.eps_groupnorm,
+        "down_kernel_size": config.down_kernel_size, 
+        "down_stride": config.down_stride, 
+        "down_padding": config.down_padding, 
+        "down_num_res_blocks": config.down_num_res_blocks, 
+        "up_kernel_size": config.up_kernel_size, 
+        "up_stride": config.up_stride, 
+        "up_padding": config.up_padding, 
+        "up_num_res_blocks": config.up_num_res_blocks, 
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "ddim_steps": config.ddim_steps,
+        "use_ema": config.use_ema,
+        "use_latent_diffusion": config.use_latent_diffusion,
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    # Initialize the DiffusionModel
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    # Train the model on MNIST
+    print_subsection("Train DiffusionModel on MNIST")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(mnist_loader, epochs)
+
+    # Sample images from the trained model
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sampled_images = diffusion_model.sample(n_samples)
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_mnist_resunet_attention_ddim.png"), title="Sampled MNIST Images")
 
 
 # ===========================
-# Test DiffusionModel on CIFAR-10 with ResUNet DDPM
+# Test DiffusionModel on MNIST with ResUNet + EMA sampling
 # ===========================
+def test_diffusion_model_mnist_resunet_ema():
+    """
+    Test the DiffusionModel on MNIST dataset using a ResUNet architecture with EMA sampling.
+
+    This function initializes the DiffusionModel with a ResUNet backbone, 
+    trains it on the MNIST dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on MNIST with ResUNet + Attention + EMA")
+    print_subsection("Load MNIST dataset")
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=64, train=True, flatten=False)
+    # only keep a small portion 
+    subset_size = 1000
+    mnist_loader = torch.utils.data.DataLoader(torch.utils.data.Subset(mnist_loader.dataset, range(subset_size)), batch_size=64, shuffle=True)
+
+    # Plot real data distribution
+    first_numbers = next(iter(mnist_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_numbers.shape)
+    plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR, "mnist_real.png"), title="Real MNIST Samples")
+
+    print_subsection("Initialize DiffusionModel with ResUNet")
+    config = DiffusionConfig(
+        # model
+        model_type="res_unet",
+        loss="mse",
+
+        num_classes=None,  # No conditional input for this test
+
+        image_size=28,
+        image_channels=1,
+
+        base_channels=32,
+        channel_mults=[1, 2],
+
+        time_emb_dim=128,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=False,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        num_groups=8,
+        eps_groupnorm=1e-5,
+
+        down_kernel_size=4,
+        down_stride=2,
+        down_padding=1,
+        down_num_res_blocks=1,
+        up_kernel_size=4,
+        up_stride=2,
+        up_padding=1,
+        up_num_res_blocks=1,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0, 
+        batch_size=64,
+
+        # sampling
+        use_ddim=False,
+        use_ema=True,
+        ema_decay=0.9999,
+
+        # latent diffusion
+        use_latent_diffusion=False
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "dropout": config.dropout, 
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "num_groups": config.num_groups, 
+        "eps_groupnorm": config.eps_groupnorm,
+        "down_kernel_size": config.down_kernel_size, 
+        "down_stride": config.down_stride, 
+        "down_padding": config.down_padding, 
+        "down_num_res_blocks": config.down_num_res_blocks, 
+        "up_kernel_size": config.up_kernel_size, 
+        "up_stride": config.up_stride, 
+        "up_padding": config.up_padding, 
+        "up_num_res_blocks": config.up_num_res_blocks, 
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "use_ema": config.use_ema,
+        "ema_decay": config.ema_decay,
+        "use_latent_diffusion": config.use_latent_diffusion,
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    # Initialize the DiffusionModel
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    # Train the model on MNIST
+    print_subsection("Train DiffusionModel on MNIST")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(mnist_loader, epochs)
+
+    # Sample images from the trained model
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sampled_images = diffusion_model.sample(n_samples)
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_mnist_resunet_ema.png"), title="Sampled MNIST Images")
+
+
+# ===========================
+# Test DiffusionModel on MNIST with ResUnet + conditional input (class labels)
+# ===========================
+def test_diffusion_model_mnist_resunet_conditional():
+    """
+    Test the DiffusionModel on MNIST dataset using a ResUNet architecture with conditional input (class labels).
+
+    This function initializes the DiffusionModel with a ResUNet backbone, 
+    trains it on the MNIST dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on MNIST with ResUNet + Conditional Input")
+    print_subsection("Load MNIST dataset")
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=64, train=True, flatten=False)
+    # only keep a small portion 
+    subset_size = 1000
+    mnist_loader = torch.utils.data.DataLoader(torch.utils.data.Subset(mnist_loader.dataset, range(subset_size)), batch_size=64, shuffle=True)
+
+    # Plot real data distribution
+    first_numbers = next(iter(mnist_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_numbers.shape)
+    plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR, "mnist_real.png"), title="Real MNIST Samples")
+
+    print_subsection("Initialize DiffusionModel with ResUNet + Latent Diffusion")
+    config = DiffusionConfig(
+        # model
+        model_type="res_unet",
+        loss="l1",
+
+        num_classes=10,  # Conditional input for MNIST (10 classes)
+        cond_drop_prob=0.1,  # Dropout probability for conditional input
+        guidance_scale=0.9,  # Guidance scale for conditional generation
+
+        image_size=28,
+        image_channels=1,
+
+        base_channels=32,
+        channel_mults=[1, 2],
+
+        time_emb_dim=128,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=False,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        num_groups=8,
+        eps_groupnorm=1e-5,
+
+        down_kernel_size=4,
+        down_stride=2,
+        down_padding=1,
+        down_num_res_blocks=1,
+        up_kernel_size=4,
+        up_stride=2,
+        up_padding=1,
+        up_num_res_blocks=1,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0, 
+        batch_size=64,
+
+        # sampling
+        use_ddim=False,
+        use_ema=False,
+
+        # latent diffusion
+        use_latent_diffusion=False 
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "cond_drop_prob": config.cond_drop_prob,
+        "guidance_scale": config.guidance_scale,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "dropout": config.dropout, 
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "num_groups": config.num_groups, 
+        "eps_groupnorm": config.eps_groupnorm,
+        "down_kernel_size": config.down_kernel_size, 
+        "down_stride": config.down_stride, 
+        "down_padding": config.down_padding, 
+        "down_num_res_blocks": config.down_num_res_blocks, 
+        "up_kernel_size": config.up_kernel_size, 
+        "up_stride": config.up_stride, 
+        "up_padding": config.up_padding, 
+        "up_num_res_blocks": config.up_num_res_blocks, 
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "use_ema": config.use_ema,
+        "use_latent_diffusion": config.use_latent_diffusion,
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    # Initialize the DiffusionModel
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    # Train the model on MNIST
+    print_subsection("Train DiffusionModel on MNIST")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(mnist_loader, epochs)
+
+    # Sample images from the trained model
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sample_numbers = torch.randint(0, 10, (n_samples,))  # Randomly sample class labels for conditional generation
+    print(f"Sampled class labels for conditional generation: {sample_numbers}")
+    sampled_images = diffusion_model.sample(n_samples, cond=sample_numbers)
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_mnist_resunet_conditional.png"), title="Sampled MNIST Images")
+
+
+# ===========================
+# Test DiffusionModel on MNIST with Latent Diffusion on ResUNet
+# ===========================
+def test_diffusion_model_mnist_latent_diffusion():
+    """
+    Test the DiffusionModel on MNIST dataset using a ResUNet architecture with Latent Diffusion.
+
+    This function initializes the DiffusionModel with a ResUNet backbone and a Latent Autoencoder, 
+    trains it on the MNIST dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on MNIST with ResUNet + Latent Diffusion")
+    print_subsection("Load MNIST dataset")
+    print("Loading MNIST dataset...")
+    mnist_loader = load_mnist(batch_size=64, train=True, flatten=False)
+    # only keep a small portion 
+    subset_size = 1000
+    mnist_loader = torch.utils.data.DataLoader(torch.utils.data.Subset(mnist_loader.dataset, range(subset_size)), batch_size=64, shuffle=True)
+
+    # Plot real data distribution
+    first_numbers = next(iter(mnist_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_numbers.shape)
+    plot_images(first_numbers, 5, save_path=os.path.join(MNIST_OUTPUT_DIR, "mnist_real.png"), title="Real MNIST Samples")
+
+    print_subsection("Initialize DiffusionModel with ResUNet + Latent Diffusion")
+    config = DiffusionConfig(
+        # model
+        model_type="res_unet",
+        loss="l1",
+
+        num_classes=None,  # No conditional input for this test
+
+        image_size=28,
+        image_channels=1,
+
+        base_channels=64,
+        channel_mults=[1, 2],
+
+        time_emb_dim=128,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=False,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        num_groups=8,
+        eps_groupnorm=1e-5,
+
+        down_kernel_size=4,
+        down_stride=2,
+        down_padding=1,
+        down_num_res_blocks=1,
+        up_kernel_size=4,
+        up_stride=2,
+        up_padding=1,
+        up_num_res_blocks=1,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0, 
+        batch_size=64,
+
+        # sampling
+        use_ddim=False,
+        use_ema=False,
+
+        # latent diffusion
+        use_latent_diffusion=True, 
+        latent_dim=16, # double conv into (16, 7, 7) latent space
+        latent_hidden_dim=64,
+        latent_kernel_size=4,
+        latent_stride=2,
+        latent_padding=1,
+        latent_scale_factor=0.18215
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "dropout": config.dropout, 
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "num_groups": config.num_groups, 
+        "eps_groupnorm": config.eps_groupnorm,
+        "down_kernel_size": config.down_kernel_size, 
+        "down_stride": config.down_stride, 
+        "down_padding": config.down_padding, 
+        "down_num_res_blocks": config.down_num_res_blocks, 
+        "up_kernel_size": config.up_kernel_size, 
+        "up_stride": config.up_stride, 
+        "up_padding": config.up_padding, 
+        "up_num_res_blocks": config.up_num_res_blocks, 
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "use_ema": config.use_ema,
+        "use_latent_diffusion": config.use_latent_diffusion,
+        "latent_dim": config.latent_dim,
+        "latent_hidden_dim": config.latent_hidden_dim,
+        "latent_kernel_size": config.latent_kernel_size,
+        "latent_stride": config.latent_stride,
+        "latent_padding": config.latent_padding,
+        "latent_scale_factor": config.latent_scale_factor
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    # Initialize the DiffusionModel
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    # Train the model on MNIST
+    print_subsection("Train DiffusionModel on MNIST")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(mnist_loader, epochs)
+
+    # Sample images from the trained model
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sampled_images = diffusion_model.sample(n_samples)
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_mnist_latent_diffusion.png"), title="Sampled MNIST Images")
+
+
+# ===========================
+# Test DiffusionModel on CIFAR-10 with ResUNet
+# ===========================
+def test_diffusion_model_cifar10_resunet():
+    """
+    Test the DiffusionModel on CIFAR-10 dataset using a ResUNet architecture.
+
+    This function initializes the DiffusionModel with a ResUNet backbone, 
+    trains it on the CIFAR-10 dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on CIFAR-10 with ResUNet")
+    print_subsection("Load CIFAR-10 dataset")
+    print("Loading CIFAR-10 dataset...")
+    cifar_loader = load_cifar10(batch_size=64, downsample=None, grayscale=False, normalize=True, flatten=False, train=True, subset_size=10000)
+
+    # Plot real data distribution
+    first_images = next(iter(cifar_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_images.shape) # torch.Size([5, 3, 32, 32])
+    first_images = (first_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    plot_images(first_images, 5, save_path=os.path.join(CIFAR_OUTPUT_DIR, "cifar10_real.png"), title="Real CIFAR-10 Samples")
+
+    print_subsection("Initialize DiffusionModel with ResUNet for CIFAR-10")
+    config = DiffusionConfig(
+        # model
+        model_type="res_unet",
+        loss="l1",
+
+        num_classes=None,  # No conditional input for this test
+
+        image_size=28,
+        image_channels=3,
+
+        base_channels=64,
+        channel_mults=[1, 2],
+
+        time_emb_dim=128,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=True,
+        attention_resolutions=(14,), # should be among the image_size / 2**i
+        num_heads=4,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        num_groups=8,
+        eps_groupnorm=1e-5,
+
+        down_kernel_size=4,
+        down_stride=2,
+        down_padding=1,
+        down_num_res_blocks=1,
+        up_kernel_size=4,
+        up_stride=2,
+        up_padding=1,
+        up_num_res_blocks=1,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0, 
+        batch_size=64,
+
+        # sampling
+        use_ddim=False,
+        use_ema=False,
+
+        # latent diffusion
+        use_latent_diffusion=False
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "attention_resolutions": config.attention_resolutions,
+        "num_heads": config.num_heads,
+        "dropout": config.dropout, 
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "num_groups": config.num_groups, 
+        "eps_groupnorm": config.eps_groupnorm,
+        "down_kernel_size": config.down_kernel_size, 
+        "down_stride": config.down_stride, 
+        "down_padding": config.down_padding, 
+        "down_num_res_blocks": config.down_num_res_blocks, 
+        "up_kernel_size": config.up_kernel_size, 
+        "up_stride": config.up_stride, 
+        "up_padding": config.up_padding, 
+        "up_num_res_blocks": config.up_num_res_blocks, 
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "use_ema": config.use_ema,
+        "use_latent_diffusion": config.use_latent_diffusion
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    # Initialize the DiffusionModel
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    # Train the model on MNIST
+    print_subsection("Train DiffusionModel on CIFAR-10")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(cifar_loader, epochs)
+
+    # Sample images from the trained model
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sampled_images = diffusion_model.sample(n_samples)
+    sampled_images = (sampled_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_cifar10_resunet.png"), title="Sampled CIFAR-10 Images")
 
 
 # ==========================
-# Test DiffusionModel on CIFAR-10 with ResUNet DDIM
+# Test DiffusionModel on CIFAR-10 with Latent Diffusion + DDIM + EMA + Conditional Input
 # ==========================
+def test_diffusion_model_cifar10_latent_diffusion_ddim_ema_conditional():
+    """
+    Test the DiffusionModel on CIFAR-10 dataset using a ResUNet architecture with Latent Diffusion, DDIM sampling, EMA, and Conditional Input.
 
+    This function initializes the DiffusionModel with a ResUNet backbone and a Latent Autoencoder, 
+    trains it on the CIFAR-10 dataset to see that everything is working as expected, 
+    and generates sample images after training (quick training for demonstration purposes, so no assertions on quality).
+    """
+    print_section("Test DiffusionModel on CIFAR-10 with ResUNet + Latent Diffusion + DDIM + EMA + Conditional Input")
+    print_subsection("Load CIFAR-10 dataset")
+    print("Loading CIFAR-10 dataset...")
+    cifar_loader = load_cifar10(batch_size=64, downsample=None, grayscale=False, normalize=True, flatten=False, train=True, subset_size=10000)
 
-# =========================
-# Test DiffusionModel on CIFAR-10 with Conditional ResUNet DDIM Ema
-# =========================
+    # Plot real data distribution
+    first_images = next(iter(cifar_loader))[0][:5]  # Get first 5 samples of the first batch
+    print(first_images.shape) # torch.Size([5, 3, 32, 32])
+    first_images = (first_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    plot_images(first_images, 5, save_path=os.path.join(CIFAR_OUTPUT_DIR, "cifar10_real.png"), title="Real CIFAR-10 Samples")
+
+    print_subsection("Initialize DiffusionModel with Latent Diffusion + DDIM + EMA + Conditional Input")
+    config = DiffusionConfig(
+        # model
+        model_type="res_unet",
+        loss="l1",
+
+        num_classes=10,  # Conditional input for CIFAR-10 (10 classes)
+        cond_drop_prob=0.1,
+        guidance_scale=0.9,
+
+        image_size=28,
+        image_channels=3,
+
+        base_channels=64,
+        channel_mults=[1, 2],
+
+        time_emb_dim=128,
+        time_width_coef=4,
+
+        # convolutional tuning
+        use_attention=True,
+        attention_resolutions=(14,), # should be among the image_size / 2**i
+        num_heads=4,
+
+        dropout=0.1,
+        kernel_size=3,
+        stride=1,
+        padding=1,
+        num_groups=8,
+        eps_groupnorm=1e-5,
+
+        down_kernel_size=4,
+        down_stride=2,
+        down_padding=1,
+        down_num_res_blocks=1,
+        up_kernel_size=4,
+        up_stride=2,
+        up_padding=1,
+        up_num_res_blocks=1,
+
+        # diffusion
+        timesteps=50,
+        beta_schedule="linear",
+        beta_start=1e-4,
+        beta_end=0.02,
+        s=0.008,
+
+        # training
+        learning_rate=1e-3,
+        beta1=0.9,
+        beta2=0.999,
+        weight_decay=0.0, 
+        batch_size=64,
+
+        # sampling
+        use_ddim=True,
+        ddim_steps=25,
+        use_ema=True,
+        ema_decay=0.9999,
+
+        # latent diffusion
+        use_latent_diffusion=True, 
+        latent_dim=16, # double conv into (16, 7, 7) latent space
+        latent_hidden_dim=64,
+        latent_kernel_size=4,
+        latent_stride=2,
+        latent_padding=1,
+        latent_scale_factor=0.18215
+    )
+    print("DiffusionModel Configuration (selected params):")
+    selected_params = {
+        "model_type": config.model_type,
+        "loss": config.loss,
+        "num_classes": config.num_classes,
+        "cond_drop_prob": config.cond_drop_prob,
+        "guidance_scale": config.guidance_scale,
+        "image_size": config.image_size,
+        "image_channels": config.image_channels,
+        "base_channels": config.base_channels,
+        "channel_mults": config.channel_mults,
+        "time_emb_dim": config.time_emb_dim,
+        "time_width_coef": config.time_width_coef,
+        "use_attention": config.use_attention,
+        "attention_resolutions": config.attention_resolutions,
+        "num_heads": config.num_heads,
+        "dropout": config.dropout, 
+        "kernel_size": config.kernel_size,
+        "stride": config.stride,
+        "padding": config.padding,
+        "num_groups": config.num_groups, 
+        "eps_groupnorm": config.eps_groupnorm,
+        "down_kernel_size": config.down_kernel_size, 
+        "down_stride": config.down_stride, 
+        "down_padding": config.down_padding, 
+        "down_num_res_blocks": config.down_num_res_blocks, 
+        "up_kernel_size": config.up_kernel_size, 
+        "up_stride": config.up_stride, 
+        "up_padding": config.up_padding, 
+        "up_num_res_blocks": config.up_num_res_blocks, 
+        "timesteps": config.timesteps,
+        "beta_schedule": config.beta_schedule,
+        "beta_start": config.beta_start,
+        "beta_end": config.beta_end,
+        "s": config.s,
+        "learning_rate": config.learning_rate,
+        "beta1": config.beta1,
+        "beta2": config.beta2,
+        "weight_decay": config.weight_decay,
+        "batch_size": config.batch_size,
+        "use_ddim": config.use_ddim,
+        "ddim_steps": config.ddim_steps,
+        "use_ema": config.use_ema,
+        "ema_decay": config.ema_decay,
+        "use_latent_diffusion": config.use_latent_diffusion,
+        "latent_dim": config.latent_dim,
+        "latent_hidden_dim": config.latent_hidden_dim,
+        "latent_kernel_size": config.latent_kernel_size,
+        "latent_stride": config.latent_stride,
+        "latent_padding": config.latent_padding,
+        "latent_scale_factor": config.latent_scale_factor
+    }
+    for key, value in selected_params.items():
+        print(f"{key}: {value}")
+    print()
+
+    print_subsection("Initialize the DiffusionModel")
+    diffusion_model = DiffusionModel(config, device="cpu")
+    print("DiffusionModel Architecture:")
+    print(diffusion_model)
+
+    print_subsection("Train DiffusionModel on CIFAR-10")
+    epochs = 2 # for demonstration purposes, see if all is working fine
+    diffusion_model.fit(cifar_loader, epochs)
+
+    print_subsection("Sample images from trained DiffusionModel")
+    n_samples = 5
+    sample_labels = torch.randint(0, 10, (n_samples,))  # Randomly sample class labels for conditional generation
+    print(f"Sampled class labels for conditional generation: {sample_labels}")
+    sampled_images = diffusion_model.sample(n_samples, cond=sample_labels)
+    sampled_images = (sampled_images + 1) / 2 # Convert from [-1,1] to [0,1]
+    plot_images(sampled_images, n_samples, save_path=os.path.join(OUTPUT_DIR, "test_diffusion_model_cifar10_latent_diffusion_ddim_ema_conditional.png"), title="Sampled CIFAR-10 Images")
 
 
 if __name__ == "__main__":
@@ -347,4 +1489,12 @@ if __name__ == "__main__":
     test_unet()
     test_latent_autoencoder()
     test_ema()
+    test_diffusion_model_mnist_cnn()
+    test_diffusion_model_mnist_resunet()
+    test_diffusion_model_mnist_resunet_attention_ddim()
+    test_diffusion_model_mnist_resunet_ema()
+    test_diffusion_model_mnist_resunet_conditional()
+    test_diffusion_model_mnist_latent_diffusion()
+    test_diffusion_model_cifar10_resunet()
+    test_diffusion_model_cifar10_latent_diffusion_ddim_ema_conditional()
     clear_data_dir()
