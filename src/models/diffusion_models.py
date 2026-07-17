@@ -34,27 +34,33 @@ class DiffusionConfig:
 
     base_channels: int = 64
     channel_mults: Tuple[int, ...] = (1, 2, 4)
-    num_res_blocks: int = 2
 
+    time_emb_dim: int = 128
+    time_width_coef: int = 4
+
+    # ======================
+    # Convolutional tuning
+    # ======================
     use_attention: bool = True
-    attention_resolutions: Tuple[int, ...] = (8,) # where to apply attention (for UNet)
+    attention_resolutions: Tuple[int, ...] = (8,)  # to apply attention to ResUnet : should be among the image_size / 2**i
     num_heads: int = 4
 
+    dropout: float = 0.0
     kernel_size: int = 3
     stride: int = 1
     padding: int = 1
+    use_batch_norm: bool = False # for classic CNNs
     num_groups: int = 8
+    eps_groupnorm: float = 1e-5
 
     down_kernel_size: int = 4
     down_stride: int = 2
     down_padding: int = 1
+    down_num_res_blocks: int = 1
     up_kernel_size: int = 4
     up_stride: int = 2
     up_padding: int = 1
-
-    time_emb_dim: int = 128
-    time_width_coef: int = 4
-    dropout: float = 0.0
+    up_num_res_blocks: int = 1
 
     # ======================
     # Diffusion
@@ -74,7 +80,8 @@ class DiffusionConfig:
     beta2: float = 0.999
     weight_decay: float = 0.0
     batch_size: int = 128
-    epochs: int = 50
+    use_torch_compile: bool = False
+    compile_mode: Literal["default", "reduce-overhead", "max-autotune"] = "reduce-overhead"
 
     # ======================
     # Sampling
@@ -88,8 +95,8 @@ class DiffusionConfig:
     # Latent Diffusion
     # ======================
     use_latent_diffusion: bool = False
-    latent_dim: int = 4
-    latent_hidden_dim: int = 32
+    latent_dim: int = 16
+    latent_hidden_dim: int = 64
     latent_kernel_size: int = 4
     latent_stride: int = 2
     latent_padding: int = 1
@@ -291,6 +298,7 @@ class CNN(nn.Module):
         output_channels: int, 
         hidden_dims: List[int],
         time_emb_dim: int,
+        time_width_coef: int = 4,
         kernel_size: int = 3,
         stride: int = 1,
         padding: int = 1,
@@ -309,6 +317,8 @@ class CNN(nn.Module):
             List of hidden dimensions for each convolutional layer
         time_emb_dim: int
             Dimension of the time embedding
+        time_width_coef: int
+            Width coefficient for the MLP in time embedding (default: 4)
         kernel_size: int
             Kernel size for convolutional layers (default: 3)
         stride: int
@@ -344,6 +354,7 @@ class CNN(nn.Module):
             in_c = h_dim
 
         self.final_conv = nn.Conv2d(in_c, output_channels, kernel_size=1)
+        self.time_emb = TimeEmbedding(time_emb_dim, time_width_coef)
         self.time_projs = nn.ModuleList([nn.Linear(time_emb_dim, h_dim) for h_dim in hidden_dims]) # time embedding projections for each hidden dim (FiLM-style addition)
 
     def forward(self, 
@@ -374,7 +385,11 @@ class CNN(nn.Module):
         """ 
         h = x
         if t_emb is not None:
-            t_emb = t_emb.to(device=h.device, dtype=h.dtype)
+            t_emb = t_emb.to(device=h.device)
+            if t_emb.dim() == 1:
+                t_emb = self.time_emb(t_emb)
+            elif t_emb.dim() != 2:
+                raise ValueError(f"Expected timestep indices or embeddings with rank 1 or 2, got shape {tuple(t_emb.shape)}")
 
         for idx, conv in enumerate(self.convs):
             h = conv(h)
@@ -399,7 +414,8 @@ class ResBlock(nn.Module):
         kernel_size: int = 3,
         stride: int = 1,
         padding: int = 1,
-        num_groups: int = 8
+        num_groups: int = 8, 
+        eps_groupnorm: float = 1e-5
     ) -> None:
         """
         Residual block for U-Net architecture, with time embedding added to the hidden layer (FiLM-style)
@@ -424,6 +440,8 @@ class ResBlock(nn.Module):
             Padding for convolutional layers (default: 1)
         num_groups: int
             Number of groups for GroupNorm (default: 8)
+        eps_groupnorm: float
+            Epsilon value for GroupNorm to avoid division by zero (default: 1e-5)
 
         Returns:
         --------
@@ -438,13 +456,13 @@ class ResBlock(nn.Module):
         """
         super().__init__()
 
-        self.norm1 = nn.GroupNorm(num_groups, in_c)
+        self.norm1 = nn.GroupNorm(num_groups, in_c, eps=eps_groupnorm)
         self.act1 = nn.SiLU()
         self.conv1 = nn.Conv2d(in_c, out_c, kernel_size, stride, padding)
 
         self.time_proj = nn.Linear(time_dim, out_c)
 
-        self.norm2 = nn.GroupNorm(8, out_c)
+        self.norm2 = nn.GroupNorm(num_groups, out_c, eps=eps_groupnorm)
         self.act2 = nn.SiLU()
         self.dropout = nn.Dropout(dropout)
         self.conv2 = nn.Conv2d(out_c, out_c, kernel_size, stride, padding)
@@ -494,7 +512,8 @@ class AttentionBlock(nn.Module):
     def __init__(self, 
         channels: int,
         num_heads: int = 4,
-        num_groups: int = 8
+        num_groups: int = 8, 
+        eps_groupnorm: float = 1e-5
     ) -> None:
         """
         Attention block for U-Net architecture, allowing the model to focus on different parts of the feature maps while processing them.
@@ -507,6 +526,8 @@ class AttentionBlock(nn.Module):
             Number of attention heads (default: 4)
         num_groups: int
             Number of groups for GroupNorm (default: 8)
+        eps_groupnorm: float
+            Epsilon value for GroupNorm to avoid division by zero (default: 1e-5)
 
         Returns:
         --------
@@ -519,7 +540,7 @@ class AttentionBlock(nn.Module):
         >>> output = attn_block(x)  # Forward pass
         """
         super().__init__()
-        self.norm = nn.GroupNorm(num_groups, channels)
+        self.norm = nn.GroupNorm(num_groups, channels, eps=eps_groupnorm)
         self.attn = nn.MultiheadAttention(channels, num_heads, batch_first=True)
 
     def forward(self, 
@@ -567,6 +588,7 @@ class DownBlock(nn.Module):
         stride: int = 1,
         padding: int = 1,
         num_groups: int = 8,
+        eps_groupnorm: float = 1e-5,
         num_heads: int = 4,
         num_res_blocks: int = 1,
         down_kernel_size: int = 4, 
@@ -596,6 +618,8 @@ class DownBlock(nn.Module):
             Padding for convolutional layers (default: 1)
         num_groups: int
             Number of groups for GroupNorm (default: 8)
+        eps_groupnorm: float
+            Epsilon value for GroupNorm to avoid division by zero (default: 1e-5)
         num_heads: int
             Number of attention heads (default: 4)
         num_res_blocks: int
@@ -623,10 +647,10 @@ class DownBlock(nn.Module):
         self.res_blocks = nn.ModuleList()
         current_c = in_c
         for _ in range(num_res_blocks):
-            self.res_blocks.append(ResBlock(current_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups))
+            self.res_blocks.append(ResBlock(current_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, eps_groupnorm=eps_groupnorm))
             current_c = out_c
         
-        self.attn = AttentionBlock(out_c, num_heads=num_heads, num_groups=num_groups) if use_attn else nn.Identity()
+        self.attn = AttentionBlock(out_c, num_heads=num_heads, num_groups=num_groups, eps_groupnorm=eps_groupnorm) if use_attn else nn.Identity()
         
         self.downsample = nn.Conv2d(out_c, out_c, kernel_size=down_kernel_size, stride=down_stride, padding=down_padding)
 
@@ -676,6 +700,7 @@ class UpBlock(nn.Module):
         stride: int = 1, 
         padding: int = 1, 
         num_groups: int = 8, 
+        eps_groupnorm: float = 1e-5,
         num_heads: int = 4, 
         num_res_blocks: int = 1,
         up_kernel_size: int = 4, 
@@ -707,6 +732,8 @@ class UpBlock(nn.Module):
             Padding for convolutional layers (default: 1)
         num_groups: int
             Number of groups for GroupNorm (default: 8)
+        eps_groupnorm: float
+            Epsilon value for GroupNorm to avoid division by zero (default: 1e-5)
         num_heads: int
             Number of attention heads (default: 4)
         num_res_blocks: int
@@ -737,10 +764,10 @@ class UpBlock(nn.Module):
         self.res_blocks = nn.ModuleList()
         current_c = out_c + skip_c
         for _ in range(num_res_blocks):
-            self.res_blocks.append(ResBlock(current_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups))
+            self.res_blocks.append(ResBlock(current_c, out_c, time_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, eps_groupnorm=eps_groupnorm))
             current_c = out_c
         
-        self.attn = AttentionBlock(out_c, num_heads=num_heads, num_groups=num_groups) if use_attn else nn.Identity()
+        self.attn = AttentionBlock(out_c, num_heads=num_heads, num_groups=num_groups, eps_groupnorm=eps_groupnorm) if use_attn else nn.Identity()
 
     def forward(self, 
         x: torch.Tensor, 
@@ -800,17 +827,18 @@ class UNet(nn.Module):
         stride: int = 1, 
         padding: int = 1, 
         num_groups: int = 8, 
-        num_res_blocks_down: int = 1,
-        num_res_blocks_up: int = 1,
+        eps_groupnorm: float = 1e-5,
         use_attention: bool = True, 
         num_heads: int = 4, 
         attention_resolutions: Tuple[int, ...] = (8,), 
         down_kernel_size: int = 4, 
         down_stride: int = 2, 
         down_padding: int = 1,
+        down_num_res_blocks: int = 1,
         up_kernel_size: int = 4, 
         up_stride: int = 2, 
-        up_padding: int = 1
+        up_padding: int = 1,
+        up_num_res_blocks: int = 1
     ) -> None:
         """
         U-Net architecture for diffusion model, consisting of : 
@@ -843,10 +871,8 @@ class UNet(nn.Module):
             Padding for convolutional layers (default: 1)
         num_groups: int
             Number of groups for GroupNorm (default: 8)
-        num_res_blocks_down: int
-            Number of residual blocks in the downsampling path, per block (default: 1)
-        num_res_blocks_up: int
-            Number of residual blocks in the upsampling path per block (default: 1)
+        eps_groupnorm: float
+            Epsilon value for GroupNorm to avoid division by zero (default: 1e-5)
         use_attention: bool
             Whether to use attention blocks in the U-Net (default: True)
         num_heads: int
@@ -859,12 +885,16 @@ class UNet(nn.Module):
             Stride for downsampling convolution within down blocks (default: 2)
         down_padding: int
             Padding for downsampling convolution within down blocks (default: 1)
+        down_num_res_blocks: int
+            Number of residual blocks in the downsampling path, per block (default: 1)
         up_kernel_size: int
             Kernel size for upsampling transposed convolution within up blocks (default: 4)
         up_stride: int
             Stride for upsampling transposed convolution within up blocks (default: 2)
         up_padding: int
             Padding for upsampling transposed convolution within up blocks (default: 1)
+        up_num_res_blocks: int
+            Number of residual blocks in the upsampling path per block (default: 1)
 
         Returns:
         --------
@@ -892,19 +922,20 @@ class UNet(nn.Module):
         in_channel = channels[0]
         for i, out_c in enumerate(channels):
             use_attn = (image_size // (2 ** i)) in attention_resolutions and use_attention
-            self.downs.append(DownBlock(in_channel, out_c, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, num_heads=num_heads, num_res_blocks=num_res_blocks_down, down_kernel_size=down_kernel_size, down_stride=down_stride, down_padding=down_padding))
+
+            self.downs.append(DownBlock(in_channel, out_c, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, eps_groupnorm=eps_groupnorm, num_heads=num_heads, num_res_blocks=down_num_res_blocks, down_kernel_size=down_kernel_size, down_stride=down_stride, down_padding=down_padding))
             self.skip_channels.append(out_c)
             in_channel = out_c
 
         # Bottleneck / Middle
         self.mid1 = nn.ModuleList([
-            ResBlock(in_channel, in_channel, time_emb_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups)
-            for _ in range(num_res_blocks_down)
+            ResBlock(in_channel, in_channel, time_emb_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, eps_groupnorm=eps_groupnorm)
+            for _ in range(down_num_res_blocks)
         ])
-        self.mid_attn = AttentionBlock(in_channel, num_heads=num_heads, num_groups=num_groups)
+        self.mid_attn = AttentionBlock(in_channel, num_heads=num_heads, num_groups=num_groups, eps_groupnorm=eps_groupnorm)
         self.mid2 = nn.ModuleList([
-            ResBlock(in_channel, in_channel, time_emb_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups)
-            for _ in range(num_res_blocks_up)
+            ResBlock(in_channel, in_channel, time_emb_dim, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, eps_groupnorm=eps_groupnorm)
+            for _ in range(up_num_res_blocks)
         ])
 
         # Decoder / Upsampling
@@ -912,7 +943,7 @@ class UNet(nn.Module):
         for i, out_c in reversed(list(enumerate(channels))):
             skip_c = self.skip_channels.pop()
             use_attn = (image_size // (2 ** i)) in attention_resolutions and use_attention
-            self.ups.append(UpBlock(in_channel, skip_c, out_c, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, num_heads=num_heads, num_res_blocks=num_res_blocks_up, up_kernel_size=up_kernel_size, up_stride=up_stride, up_padding=up_padding))
+            self.ups.append(UpBlock(in_channel, skip_c, out_c, time_emb_dim, use_attn=use_attn, dropout=dropout, kernel_size=kernel_size, stride=stride, padding=padding, num_groups=num_groups, eps_groupnorm=eps_groupnorm, num_heads=num_heads, num_res_blocks=up_num_res_blocks, up_kernel_size=up_kernel_size, up_stride=up_stride, up_padding=up_padding))
             in_channel = out_c
 
         self.final = nn.Conv2d(in_channel, image_channels, 1)
@@ -1031,7 +1062,7 @@ class LatentAutoEncoder(nn.Module):
             nn.ConvTranspose2d(hidden_dim, in_c, kernel_size, stride, padding),
             nn.Tanh()
         )
-
+         
     def encode(self,
         x: torch.Tensor
     ) -> torch.Tensor:
@@ -1187,7 +1218,7 @@ class EMA:
 # =======================================
 # Diffusion Model Class
 # =======================================
-class DiffusionModel:
+class DiffusionModel(nn.Module):
     def __init__(self, 
         cfg: DiffusionConfig, 
         device: str = "cpu"
@@ -1228,49 +1259,6 @@ class DiffusionModel:
             device=self.device
         )
 
-        if self.cfg.model_type == "cnn":
-            self.model = CNN(
-                input_channels=cfg.image_channels,
-                output_channels=cfg.image_channels,
-                hidden_dims=[cfg.base_channels * m for m in cfg.channel_mults],
-                kernel_size=cfg.kernel_size,
-                stride=cfg.stride,
-                padding=cfg.padding,
-                use_batch_norm=True
-            ).to(self.device)
-        elif self.cfg.model_type in ["conv_unet", "res_unet"]:
-            self.model = UNet(
-                time_emb_dim=cfg.time_emb_dim,
-                image_channels=cfg.image_channels,
-                image_size=cfg.image_size, 
-                time_width_coef=cfg.time_width_coef,
-                base_channels=cfg.base_channels,
-                channel_mults=cfg.channel_mults,
-                dropout=cfg.dropout,
-                kernel_size=cfg.kernel_size,
-                stride=cfg.stride,
-                padding=cfg.padding,
-                num_groups=cfg.num_groups,
-                use_res_block=(self.cfg.model_type == "res_unet"),
-                num_res_blocks=cfg.num_res_blocks,
-                use_attention=cfg.use_attention, 
-                num_heads=cfg.num_heads,
-                attention_resolutions=cfg.attention_resolutions
-            ).to(self.device)
-        else:
-            raise ValueError(f"Unknown model type: {self.cfg.model_type}")
-
-        if hasattr(torch, "compile"):
-            self.model = torch.compile(self.model, mode="reduce-overhead")
-
-        self.cond_embed = None
-        if self.cfg.num_classes is not None:
-            self.cond_embed = nn.Embedding(self.cfg.num_classes, self.cfg.time_emb_dim).to(self.device)
-
-        params = list(self.model.parameters())
-        if self.cond_embed is not None:
-            params += list(self.cond_embed.parameters())
-
         self.ae = None
         if self.cfg.use_latent_diffusion:
             self.ae = LatentAutoEncoder(
@@ -1289,7 +1277,58 @@ class DiffusionModel:
             dummy = torch.zeros(1, self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size).to(self.device)
             with torch.no_grad():
                 latent = self.ae.encode(dummy)
-            self.latent_shape = latent.shape[1:]  # (C, H, W)
+            self.latent_c, self.latent_h, self.latent_w = latent.shape[1:]
+
+        if self.cfg.model_type == "cnn":
+            self.model = CNN(
+                input_channels=cfg.image_channels,
+                output_channels=cfg.image_channels,
+                hidden_dims=[cfg.base_channels * m for m in cfg.channel_mults],
+                time_emb_dim=cfg.time_emb_dim,
+                kernel_size=cfg.kernel_size,
+                stride=cfg.stride,
+                padding=cfg.padding,
+                use_batch_norm=cfg.use_batch_norm
+            ).to(self.device)
+        elif self.cfg.model_type in ["conv_unet", "res_unet"]:
+            self.model = UNet(
+                time_emb_dim=cfg.time_emb_dim,
+                image_channels=self.latent_c if self.cfg.use_latent_diffusion else cfg.image_channels,
+                image_size=self.latent_h if self.cfg.use_latent_diffusion else cfg.image_size,
+                time_width_coef=cfg.time_width_coef,
+                base_channels=cfg.base_channels,
+                channel_mults=cfg.channel_mults,
+                dropout=cfg.dropout,
+                kernel_size=cfg.kernel_size,
+                stride=cfg.stride,
+                padding=cfg.padding,
+                num_groups=cfg.num_groups,
+                eps_groupnorm=cfg.eps_groupnorm,
+                use_attention=cfg.use_attention, 
+                num_heads=cfg.num_heads,
+                attention_resolutions=cfg.attention_resolutions, 
+                down_kernel_size=cfg.down_kernel_size,
+                down_stride=cfg.down_stride,
+                down_padding=cfg.down_padding,  
+                down_num_res_blocks=cfg.down_num_res_blocks,
+                up_kernel_size=cfg.up_kernel_size,
+                up_stride=cfg.up_stride,
+                up_padding=cfg.up_padding,
+                up_num_res_blocks=cfg.up_num_res_blocks
+            ).to(self.device)
+        else:
+            raise ValueError(f"Unknown model type: {self.cfg.model_type}")
+
+        if cfg.use_torch_compile and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model, mode=cfg.compile_mode)
+
+        self.cond_embed = None
+        if self.cfg.num_classes is not None:
+            self.cond_embed = nn.Embedding(self.cfg.num_classes, self.cfg.time_emb_dim).to(self.device)
+
+        params = list(self.model.parameters())
+        if self.cond_embed is not None:
+            params += list(self.cond_embed.parameters())
 
         self.opt = torch.optim.Adam(
             params,
@@ -1370,13 +1409,20 @@ class DiffusionModel:
         t = torch.randint(0, self.cfg.timesteps, (B,), device=self.device)
 
         xt, noise = self.forward_diffusion(x0, t)
-        cond = self.cond_embed(y) if y is not None else None
+
+        cond = None
+        if y is not None:
+            cond = self.cond_embed(y) 
+
         if self.cfg.cond_drop_prob > 0 and cond is not None:
             drop_mask = torch.rand(B, device=self.device) < self.cfg.cond_drop_prob
             cond = cond.clone()
             cond[drop_mask] = 0.0 # unconditional for dropped samples
 
-        pred = self.model(xt, t, cond)
+        if self.cfg.num_classes is not None and cond is not None:
+            pred = self.model(xt, t, cond)
+        else:
+            pred = self.model(xt, t)
 
         if self.cfg.loss == "l1":
             return F.l1_loss(pred, noise)
@@ -1418,7 +1464,10 @@ class DiffusionModel:
         if self.cfg.use_latent_diffusion:
             with torch.no_grad():
                 x = self.ae.encode(x)
-        loss = self.diffusion_loss(x, y)
+        if self.cfg.num_classes is not None and y is not None:
+            loss = self.diffusion_loss(x, y)
+        else:
+            loss = self.diffusion_loss(x)
 
         self.opt.zero_grad()
         loss.backward()
@@ -1432,7 +1481,8 @@ class DiffusionModel:
     # Training loop
     # ======================
     def fit(self, 
-        dataloader: DataLoader
+        dataloader: DataLoader, 
+        epochs: int
     ) -> None:
         """
         Train the diffusion model for a specified number of epochs using the provided dataloader
@@ -1441,6 +1491,8 @@ class DiffusionModel:
         -----------
         dataloader: DataLoader
             PyTorch DataLoader providing batches of training data
+        epochs: int
+            Number of epochs to train the model
 
         Returns:
         --------
@@ -1451,14 +1503,18 @@ class DiffusionModel:
         >>> model = DiffusionModel(cfg, device="cpu")
         >>> model.fit(dataloader)  # Train the model using a dataloader
         """
-        for epoch in range(self.cfg.epochs):
+        for epoch in range(epochs):
             total_loss = 0
 
             for batch in dataloader:
-                if len(batch) == 2:
-                    x, y = batch
+                if isinstance(batch, (list, tuple)):
+                    if len(batch) == 2:
+                        x, y = batch
+                    else:
+                        x, y = batch[0], None
                 else:
                     x, y = batch, None
+
                 total_loss += self.train_step(x, y)
 
             print(f"Epoch {epoch+1} | Loss: {total_loss / len(dataloader):.4f}")
@@ -1495,7 +1551,7 @@ class DiffusionModel:
             self.ema.apply_shadow()
 
         if self.cfg.use_latent_diffusion:
-            x = torch.randn(n, self.latent_shape[0], self.latent_shape[1], self.latent_shape[2]).to(self.device)
+            x = torch.randn(n, self.latent_c, self.latent_h, self.latent_w).to(self.device)
         else:
             x = torch.randn(n, self.cfg.image_channels, self.cfg.image_size, self.cfg.image_size).to(self.device)
 
@@ -1505,13 +1561,13 @@ class DiffusionModel:
         for i in reversed(indices):
             t = torch.full((n,), i, device=self.device)
 
-            cond_emb = self.cond_embed(cond) if cond is not None else None
-            if self.cfg.guidance_scale > 0 and cond_emb is not None:
+            if self.cfg.guidance_scale > 0 and self.cfg.num_classes is not None and cond is not None:
+                cond_emb = self.cond_embed(cond) if cond is not None else None
                 eps_cond = self.model(x, t, cond_emb)
                 eps_uncond = self.model(x, t, None)
                 eps = eps_uncond + self.cfg.guidance_scale * (eps_cond - eps_uncond)
             else: 
-                eps = self.model(x, t, cond_emb)
+                eps = self.model(x, t)
 
             if self.cfg.use_ddim: # DDIM sampling
                 alpha_bar_prev = self.scheduler.alpha_bar[indices[indices < i].max()] if i > 0 else torch.tensor(1.0).to(self.device)
@@ -1524,7 +1580,7 @@ class DiffusionModel:
                     x += sigma * noise
 
             else: # DDPM sampling
-                x = (1 / self.scheduler.self.scheduler.sqrt_alpha_bar[i]) * (x - ((1 - self.scheduler.self.scheduler.sqrt_alpha_bar[i]) / self.scheduler.self.scheduler.sqrt_one_minus_alpha_bar[i]) * eps)
+                x = (1 / self.scheduler.sqrt_alpha_bar[i]) * (x - ((1 - self.scheduler.sqrt_alpha_bar[i]) / self.scheduler.sqrt_one_minus_alpha_bar[i]) * eps)
                 if i > 0:
                     noise = torch.randn_like(x)
                     beta = self.scheduler.betas[i].to(self.device)
