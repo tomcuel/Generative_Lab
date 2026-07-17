@@ -849,7 +849,7 @@ class BaseVAE(nn.Module):
         Parameters:
         -----------
         path: str
-            File path to save the model state (e.g. "models/vae.pt")
+            File path to save the model state (e.g. "models/vae.pth")
         print_message: bool
             Whether to print a confirmation message after saving (default: False)
 
@@ -859,10 +859,18 @@ class BaseVAE(nn.Module):
 
         Usage Example:
         --------------
-        >>> vae.save("models/vae.pt")
+        >>> vae.save("models/vae.pth")
         """
+        if not path.endswith(".pth"):
+            raise ValueError("File path must end with .pth")
+        
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(self.state_dict(), path)
+
+        payload = {
+            "cfg": self.cfg.__dict__,
+            "model_state_dict": self.state_dict(),
+        }
+        torch.save(payload, path)
         if print_message:
             print(f"Saved VAE model to {path}")
 
@@ -877,7 +885,7 @@ class BaseVAE(nn.Module):
         Parameters:
         -----------
         path: str
-            File path to load the model state from (e.g. "models/vae.pt")
+            File path to load the model state from (e.g. "models/vae.pth")
         print_message: bool
             Whether to print a confirmation message after loading (default: False)
 
@@ -886,10 +894,14 @@ class BaseVAE(nn.Module):
         None
 
         Usage Example:
-        >>> vae.load("models/vae.pt")
+        >>> vae.load("models/vae.pth")
         """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File {path} does not exist")
+        
         state_dict = torch.load(path, map_location=self.device)
-        self.load_state_dict(state_dict)
+        self.cfg = VAEConfig(**state_dict["cfg"])
+        self.state_dict() = state_dict["model_state_dict"]
         if print_message:
             print(f"Loaded VAE model from {path}")
         
@@ -1417,7 +1429,7 @@ class FastCNNVAE(nn.Module):
         Parameters:
         -----------
         path: str
-            File path to save the model state (e.g. "models/fast_cnn_vae.pt")
+            File path to save the model state (e.g. "models/fast_cnn_vae.pth")
         print_message: bool
             Whether to print a confirmation message after saving (default: False)
 
@@ -1427,7 +1439,7 @@ class FastCNNVAE(nn.Module):
 
         Usage Example:
         --------------
-        >>> vae.save("models/fast_cnn_vae.pt")
+        >>> vae.save("models/fast_cnn_vae.pth")
         """       
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(self.state_dict(), path)
@@ -1445,7 +1457,7 @@ class FastCNNVAE(nn.Module):
         Parameters:
         -----------
         path: str
-            File path to load the model state from (e.g. "models/fast_cnn_vae.pt")
+            File path to load the model state from (e.g. "models/fast_cnn_vae.pth")
         print_message: bool
             Whether to print a confirmation message after loading (default: False)
 
@@ -1455,7 +1467,7 @@ class FastCNNVAE(nn.Module):
 
         Usage Example:
         --------------
-        >>> vae.load("models/fast_cnn_vae.pt")
+        >>> vae.load("models/fast_cnn_vae.pth")
         """
         state_dict = torch.load(path, map_location=self.device)
         self.load_state_dict(state_dict)

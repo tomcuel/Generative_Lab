@@ -1250,6 +1250,7 @@ class DiffusionModel(nn.Module):
         self.cfg = cfg
         self.device = device
 
+        # Noise scheduler for the diffusion process
         self.scheduler = NoiseScheduler(
             timesteps=cfg.timesteps,
             beta_schedule=cfg.beta_schedule,
@@ -1259,6 +1260,7 @@ class DiffusionModel(nn.Module):
             device=self.device
         )
 
+        # Latent autoencoder for latent diffusion (optional) 
         self.ae = None
         if self.cfg.use_latent_diffusion:
             self.ae = LatentAutoEncoder(
@@ -1279,6 +1281,7 @@ class DiffusionModel(nn.Module):
                 latent = self.ae.encode(dummy)
             self.latent_c, self.latent_h, self.latent_w = latent.shape[1:]
 
+        # Neural network model (U-Net or CNN) for predicting noise in the diffusion process
         if self.cfg.model_type == "cnn":
             self.model = CNN(
                 input_channels=cfg.image_channels,
@@ -1322,6 +1325,7 @@ class DiffusionModel(nn.Module):
         if cfg.use_torch_compile and hasattr(torch, "compile"):
             self.model = torch.compile(self.model, mode=cfg.compile_mode)
 
+        # Conditional embedding for class labels (optional) if num_classes is specified in the configuration
         self.cond_embed = None
         if self.cfg.num_classes is not None:
             self.cond_embed = nn.Embedding(self.cfg.num_classes, self.cfg.time_emb_dim).to(self.device)
@@ -1330,13 +1334,10 @@ class DiffusionModel(nn.Module):
         if self.cond_embed is not None:
             params += list(self.cond_embed.parameters())
 
-        self.opt = torch.optim.Adam(
-            params,
-            lr=cfg.learning_rate,
-            betas=(cfg.beta1, cfg.beta2),
-            weight_decay=cfg.weight_decay
-        )
+        # Optimizer for training the model
+        self.opt = torch.optim.Adam(params, lr=cfg.learning_rate, betas=(cfg.beta1, cfg.beta2), weight_decay=cfg.weight_decay)
 
+        # Exponential Moving Average (EMA) for model parameters (optional)
         self.ema = EMA(self.model, decay=cfg.ema_decay) if cfg.use_ema else None
 
     # ======================
@@ -1369,9 +1370,6 @@ class DiffusionModel(nn.Module):
         >>> xt, noise = model.forward_diffusion(x0, t)  # Forward diffusion process
         """
         noise = torch.randn_like(x0)
-
-        # alpha_bar = self.scheduler.alpha_bar[t].view(-1, 1, 1, 1).to(self.device)
-        # xt = torch.sqrt(alpha_bar) * x0 + torch.sqrt(1 - alpha_bar) * noise
         xt = self.scheduler.q_sample(x0, t, noise)
         return xt, noise
 
@@ -1593,6 +1591,82 @@ class DiffusionModel(nn.Module):
             x = self.ae.decode(x)
 
         return x.clamp(-1, 1).cpu()
+    
+    def save(
+        self, 
+        path: str, 
+        print_message: bool = False
+    ) -> None:
+        """
+        Save the DiffusionModel's state_dict to a file
+
+        Parameters:
+        -----------
+        path: str
+            File path to save the model state_dict
+        print_message: bool
+            Whether to print a confirmation message after saving (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> model.save("models/diffusion_model.pth")  
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File {path} does not exist")
+        
+        payload = {
+            "cfg": self.cfg,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.opt.state_dict(),
+            "ema_state_dict": self.ema.shadow if self.ema is not None else None,
+            "ae_state_dict": self.ae.state_dict() if self.ae is not None else None,
+            "cond_embed_state_dict": self.cond_embed.state_dict() if self.cond_embed is not None else None
+        }
+        torch.save(payload, path)
+        if print_message:
+            print(f"Model saved to {path}")
+
+    def load(
+        self,
+        path: str,
+        print_message: bool = False
+    ) -> None:
+        """
+        Load the DiffusionModel's state from a file
+
+        Parameters:
+        -----------
+        path: str
+            File path to load the model state from (e.g. "models/diffusion_model.pth")
+        print_message: bool
+            Whether to print a confirmation message after loading (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        >>> model.load("models/diffusion_model.pth")
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File {path} does not exist")
+        
+        state_dict = torch.load(path, map_location=self.device)
+        self.cfg = state_dict["cfg"]
+        self.model.load_state_dict(state_dict["model_state_dict"])
+        self.opt.load_state_dict(state_dict["optimizer_state_dict"])
+        if self.ema is not None and state_dict["ema_state_dict"] is not None:
+            self.ema.shadow = state_dict["ema_state_dict"]
+        if self.ae is not None and state_dict["ae_state_dict"] is not None:
+            self.ae.load_state_dict(state_dict["ae_state_dict"])
+        if self.cond_embed is not None and state_dict["cond_embed_state_dict"] is not None:
+            self.cond_embed.load_state_dict(state_dict["cond_embed_state_dict"])
+        if print_message:
+            print(f"Model loaded from {path}")
 
 
 # === FILE: NRT/NRT_diffusion_models/test.py ===

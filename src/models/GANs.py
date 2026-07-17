@@ -1636,6 +1636,84 @@ class GAN(nn.Module):
 
         # fallback (image reshape)
         return samples.view(n, 1, self.cfg.image_size, self.cfg.image_size).cpu()
+    
+    def save(
+        self, 
+        path: str, 
+        print_message: bool = False
+    ) -> None:
+        """
+        Save the GAN model state to a file
+
+        Parameters:
+        -----------
+        path: str
+            File path to save the model state (e.g. "models/gan.pth")
+        print_message: bool
+            Whether to print a confirmation message after saving (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        --------------
+        >>> gan.save("models/gan.pth")
+        """
+        if not path.endswith(".pth"):
+            raise ValueError("File path must end with .pth")
+        
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        payload = {
+            'cfg': self.cfg.__dict__,
+            'G_state_dict': self.G.state_dict(),
+            'D_state_dict': self.D.state_dict(),
+            'opt_G_state_dict': self.opt_G.state_dict(),
+            'opt_D_state_dict': self.opt_D.state_dict(),
+            'ema_G_state_dict': self.ema_G.state_dict() if self.cfg.is_ema and hasattr(self, "ema_G") else None
+        }
+        torch.save(payload, path)
+        if print_message:
+            print(f"Saved GAN model to {path}")
+
+    def load(
+        self,
+        path: str,
+        print_message: bool = False
+    ) -> None:
+        """
+        Load the GAN model state from a file
+
+        Parameters:
+        -----------
+        path: str
+            File path to load the model state from (e.g. "models/gan.pth")
+        print_message: bool
+            Whether to print a confirmation message after loading (default: False)
+
+        Returns:
+        --------
+        None
+
+        Usage Example:
+        >>> gan.load("models/gan.pth")
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File {path} does not exist")
+        
+        state_dict = torch.load(path, map_location=self.device)
+        self.cfg = GANConfig(**state_dict['cfg'])
+        self.G.load_state_dict(state_dict['G_state_dict'])
+        self.D.load_state_dict(state_dict['D_state_dict'])
+        self.opt_G.load_state_dict(state_dict['opt_G_state_dict'])
+        self.opt_D.load_state_dict(state_dict['opt_D_state_dict'])
+        if self.cfg.is_ema and state_dict['ema_G_state_dict'] is not None:
+            if not hasattr(self, "ema_G"):
+                self.ema_G = copy.deepcopy(self.G).eval()
+            self.ema_G.load_state_dict(state_dict['ema_G_state_dict'])
+        if print_message:
+            print(f"Loaded GAN model from {path}")
 
 
 # === FILE: NRT/NRT_GANs/test.py ===
