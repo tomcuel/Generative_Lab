@@ -18,6 +18,10 @@ from src.data.load import (
     load_fashion_mnist,
     load_cifar10
 )
+from src.data.utils import set_seed
+
+
+RANDOM_SEED = 42
 
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -182,6 +186,8 @@ def test_cifar10():
 # Run NRT
 # ===========================
 if __name__ == "__main__":
+    set_seed(RANDOM_SEED)
+
     test_blobs()
 
     test_mnist()

@@ -15,11 +15,15 @@ from src.data.load import (
     load_mnist,
     load_cifar10
 )
+from src.data.utils import set_seed
 from src.models.VAEs import (
     VAEConfig, 
     BaseVAE, 
     FastCNNVAE
 )
+
+
+RANDOM_SEED = 42
 
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -537,6 +541,7 @@ def test_CNN_BaseVAE_cifar10():
 
 
 if __name__ == "__main__":
+    set_seed(RANDOM_SEED)
     print_section("Testing VAE architectures on Blobs dataset")
     test_MLP_BaseVAE_blobs()
 

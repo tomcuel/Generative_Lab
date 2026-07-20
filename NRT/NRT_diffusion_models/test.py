@@ -17,7 +17,10 @@ from src.data.load import (
     load_mnist,
     load_cifar10
 )
-from src.data.utils import plot_images
+from src.data.utils import (
+    set_seed, 
+    plot_images
+)
 from src.models.diffusion_models import (
     DiffusionConfig, 
     NoiseScheduler, 
@@ -33,6 +36,8 @@ from src.models.diffusion_models import (
     DiffusionModel
 )
 
+
+RANDOM_SEED = 42
 
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -1483,6 +1488,7 @@ def test_diffusion_model_cifar10_latent_diffusion_ddim_ema_conditional():
 
 
 if __name__ == "__main__":
+    set_seed(RANDOM_SEED)
     test_noise_scheduler()
     test_time_embedding()
     test_cnn()
