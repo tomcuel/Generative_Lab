@@ -18,9 +18,9 @@ from src.data.load import (
     load_cifar10
 )
 from src.data.utils import (
+    set_seed,
     plot_blob_distribution,
-    plot_images, 
-    save_image_grid
+    plot_images
 )
 from src.models.GANs import (
     MLPGenerator, 
@@ -33,6 +33,8 @@ from src.models.GANs import (
     GAN
 )
 
+
+RANDOM_SEED = 42
 
 OUTPUT_DIR = "outputs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -1545,6 +1547,7 @@ def test_stylegan_cifar10_3():
 
 
 if __name__ == "__main__":
+    set_seed(RANDOM_SEED)
     print_section("Testing Generator and Discriminator architectures")
 
     print_subsection("Testing MLP Generator and Discriminator")
