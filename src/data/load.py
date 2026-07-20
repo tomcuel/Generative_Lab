@@ -64,7 +64,8 @@ def load_mnist(
     downsample: tuple[int, int] | None = None,
     normalize: bool = False, 
     flatten: bool = True,
-    train: bool = True
+    train: bool = True,
+    root: Optional[str] = None
 ) -> DataLoader:
     """
     Load the MNIST dataset with optional downsampling
@@ -82,6 +83,8 @@ def load_mnist(
         If True, images will be flattened to (H*W,) or (new_h*new_w,); if False, images will be kept in (C, H, W) format
     train: bool
         If True, load the training set; otherwise, load the test set
+    root: str | None
+        Optional directory where the dataset will be stored/downloaded. If None, uses ./data.
     
     Returns:
     --------
@@ -96,6 +99,7 @@ def load_mnist(
     ...     print(labels.shape)  # Output: torch.Size([64])
     ...     break
     """
+    data_root = os.path.abspath(root) if root is not None else os.path.abspath("./data")
     transform_list = []
     transform_list.append(transforms.ToTensor())    
 
@@ -112,7 +116,7 @@ def load_mnist(
     transform = transforms.Compose(transform_list)
 
     dataset = datasets.MNIST(
-        root="./data",
+        root=data_root,
         train=train,
         download=True,
         transform=transform
@@ -126,7 +130,8 @@ def load_fashion_mnist(
     downsample: tuple[int, int] | None = None,
     normalize: bool = False,
     flatten: bool = True,
-    train: bool = True
+    train: bool = True,
+    root: Optional[str] = None
 ) -> DataLoader:
     """
     Load the FashionMNIST dataset with optional downsampling
@@ -144,6 +149,8 @@ def load_fashion_mnist(
         If True, images will be flattened to (H*W,) or (new_h*new_w,); if False, images will be kept in (C, H, W) format
     train: bool
         If True, load the training set; otherwise, load the test set
+    root: str | None
+        Optional directory where the dataset will be stored/downloaded. If None, uses ./data.
     
     Returns:
     --------
@@ -158,6 +165,7 @@ def load_fashion_mnist(
     ...     print(labels.shape)  # Output: torch.Size([64])
     ...     break
     """
+    data_root = os.path.abspath(root) if root is not None else os.path.abspath("./data")
     transform_list = []
     transform_list.append(transforms.ToTensor())
 
@@ -174,7 +182,7 @@ def load_fashion_mnist(
     transform = transforms.Compose(transform_list)
 
     dataset = datasets.FashionMNIST(
-        root="./data",
+        root=data_root,
         train=train,
         download=True,
         transform=transform
@@ -190,7 +198,8 @@ def load_cifar10(
     normalize: bool = False,
     flatten: bool = True,
     train: bool = True, 
-    subset_size: Optional[int] = None
+    subset_size: Optional[int] = None,
+    root: Optional[str] = None
 ) -> DataLoader:
     """
     Load the CIFAR-10 dataset with optional downsampling, flattening, grayscale conversion, and normalization
@@ -212,6 +221,8 @@ def load_cifar10(
         If True, load the training set; otherwise, load the test set
     subset_size: int | None
         If not None, load only a subset of the dataset for faster testing (useful for GANs/VAEs where training can be slow); if None, load the entire dataset
+    root: str | None
+        Optional directory where the dataset will be stored/downloaded. If None, uses ./data.
 
     Returns:
     --------
@@ -226,6 +237,7 @@ def load_cifar10(
     ...     print(labels.shape)  # Output: torch.Size([64])
     ...     break
     """
+    data_root = os.path.abspath(root) if root is not None else os.path.abspath("./data")
     transform_list = []
     if grayscale:
         transform_list.append(transforms.Grayscale())
@@ -248,7 +260,7 @@ def load_cifar10(
     transform = transforms.Compose(transform_list)
 
     dataset = datasets.CIFAR10(
-        root="./data",
+        root=data_root,
         train=train,
         download=True,
         transform=transform
