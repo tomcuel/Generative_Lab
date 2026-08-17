@@ -145,6 +145,8 @@ class NoiseScheduler:
         >>> noise = torch.randn_like(x0)  # Noise to be added
         >>> x_t = scheduler.q_sample(x0, t, noise)
         """
+        self.timesteps = timesteps
+        
         if beta_schedule == "linear":
             self.betas = torch.linspace(beta_start, beta_end, timesteps)
         elif beta_schedule == "cosine":
@@ -158,6 +160,9 @@ class NoiseScheduler:
 
         self.sqrt_alpha_bar = torch.sqrt(self.alpha_bar)
         self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - self.alpha_bar)
+
+        self.alpha_bar_prev = torch.cat([torch.ones(1, device=device), self.alpha_bar[:-1]])
+        self.posterior_variance = self.betas * (1.0 - self.alpha_bar_prev) / (1.0 - self.alpha_bar)
 
     def cosine_schedule(self, 
         T: int,
@@ -192,7 +197,7 @@ class NoiseScheduler:
     def q_sample(self, 
         x0: torch.Tensor,
         t: torch.Tensor,
-        noise: torch.Tensor
+        noise: torch.Tensor = None
     ) -> torch.Tensor:
         """ 
         Sample from the forward diffusion process q(x_t | x_0) using the reparameterization trick
@@ -203,7 +208,7 @@ class NoiseScheduler:
             Original images (x_0)   
         t: torch.Tensor
             Timesteps for each image in the batch
-        noise: torch.Tensor
+        noise: torch.Tensor (default None)
             Noise to be added to the images
 
         Returns:
@@ -219,6 +224,8 @@ class NoiseScheduler:
         >>> noise = torch.randn_like(x0)  # Noise to be added
         >>> x_t = scheduler.q_sample(x0, t, noise)
         """
+        if noise is None:
+            noise = torch.randn_like(x0)
         return self.sqrt_alpha_bar[t].view(-1,1,1,1) * x0 + self.sqrt_one_minus_alpha_bar[t].view(-1,1,1,1) * noise
 
 
