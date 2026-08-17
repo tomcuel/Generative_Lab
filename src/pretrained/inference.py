@@ -236,3 +236,6 @@ class PretrainedInference:
 
 inference = PretrainedInference(model_type=args.model_type, device=device, args=args, image_save_path=image_save_path, model_save_path=model_save_path)
 inference.run()
+
+
+# === FILE: NRT/NRT_inference/test.py ===
