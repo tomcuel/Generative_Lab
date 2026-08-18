@@ -9,6 +9,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.append(str(PROJECT_ROOT))
 
 
+# ===========================
+# Command Line Experiments
+# ===========================
 def test_inference_ddpm():
     """
     Test the inference function for the DDPM model
@@ -80,4 +83,5 @@ python src/pretrained/inference.py --model_type stable_diffusion --description "
 
 """
 loading the class to play with it without having everything handled by the command line argulents 
+checking each component individually instead of the whole package
 """
