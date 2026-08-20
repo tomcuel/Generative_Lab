@@ -265,11 +265,14 @@ def load_cifar10(
         download=True,
         transform=transform
     )
+    class_names = list(dataset.classes)
     if subset_size is not None:
         subset = torch.utils.data.Subset(dataset, range(subset_size))
         dataset = subset
 
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    loader.class_names = class_names
+    return loader
 
-
+    
 # === FILE: NRT/NRT_load/test.py ===
