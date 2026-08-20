@@ -67,6 +67,22 @@ def save_image_grid(images, path, n=16):
     plt.close()
 
 
+def assert_cifar10_class_names(class_names):
+    expected = [
+        "airplane",
+        "automobile",
+        "bird",
+        "cat",
+        "deer",
+        "dog",
+        "frog",
+        "horse",
+        "ship",
+        "truck",
+    ]
+    assert isinstance(class_names, list)
+    assert class_names == expected
+
 # ===========================
 # NRT Tests
 # ===========================
@@ -126,14 +142,17 @@ def test_cifar10():
     loader = load_cifar10(
         batch_size=32, 
         downsample=(16,16), 
-        flatten=True, 
         grayscale=True,
-        normalize=False
+        normalize=False,
+        flatten=True, 
+        subset_size=100
     )
     X, y = next(iter(loader))
 
     # Verify shape
     assert X.shape == (32, 16*16)
+    assert y.shape == (32,)
+    assert_cifar10_class_names(loader.class_names)
     # Show a few label values
     print("Sample labels:", y[:5].numpy())
 
@@ -147,12 +166,15 @@ def test_cifar10():
         downsample=(32,32), 
         flatten=True,
         grayscale=False, 
-        normalize=False
+        normalize=False,
+        subset_size=100
     )
     X, y = next(iter(loader))
 
     # Verify shape 
     assert X.shape == (32, 3*32*32)
+    assert y.shape == (32,)
+    assert_cifar10_class_names(loader.class_names)
     # Verify pixel value range
     assert X.min() >= 0.0 and X.max() <= 1.0
     
@@ -166,12 +188,15 @@ def test_cifar10():
         downsample=(16,16), 
         flatten=False,
         grayscale=False, 
-        normalize=True
+        normalize=True, # normalize to [-1, 1] so plots are darker if output is return back to original range for visualization
+        subset_size=100
     )
     X, y = next(iter(loader))
 
     # Verify shape
     assert X.shape == (32, 3, 16, 16)
+    assert y.shape == (32,)
+    assert_cifar10_class_names(loader.class_names)
     # Verify pixel value range    assert X.min() >= -1.0 and X.max() <= 1.0
     assert X.min() >= -1.0 and X.max() <= 1.0
 
@@ -179,7 +204,6 @@ def test_cifar10():
     save_image_grid(images, os.path.join(CIFAR_OUTPUT_DIR,"cifar_rgb_normalized.png"), 16)
 
     print("CIFAR10 RGB Normalized OK")
-
 
 
 # ===========================
@@ -198,5 +222,4 @@ if __name__ == "__main__":
     test_cifar10()
 
     clear_data_dir()
-
     print("\nAll dataset NRT tests passed")
