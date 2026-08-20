@@ -17,8 +17,27 @@ from torch.utils.data import DataLoader
 # Important Path Setup
 # =======================================
 from src.data.utils import set_seed
+from src.data.load import load_cifar10
 from src.models.diffusion_models import NoiseScheduler
 from src.pretrained.fine_tuning import PretrainedFineTuning
+
+
+def _images_to_pil_list(images):
+    if torch.is_tensor(images):
+        images = [images]
+    elif not isinstance(images, (list, tuple)):
+        images = list(images)
+
+    pil_images = []
+    for image in images:
+        if torch.is_tensor(image):
+            if image.ndim == 4:
+                pil_images.extend(transforms.ToPILImage()(sample.detach().cpu().clamp(0, 1)) for sample in image)
+            else:
+                pil_images.append(transforms.ToPILImage()(image.detach().cpu().clamp(0, 1)))
+        else:
+            pil_images.append(image)
+    return pil_images
 
 
 # =======================================
@@ -61,7 +80,7 @@ parser.add_argument("--device",
 # ------------------------------------------------------------
 parser.add_argument("--experiment",
                     type=str,
-                    choices=["baseline", "custom_sampling", "custom_scheduler", "finetune", "lora"],
+                    choices=["baseline", "custom_scheduler_and_sampling", "finetune", "lora"],
                     default="baseline",
                     help="Type of experiment to run for fine-tuning")
 
@@ -131,6 +150,10 @@ parser.add_argument("--cosine_s",
 # ------------------------------------------------------------
 # Training
 # ------------------------------------------------------------
+parser.add_argument("--training_batch_size",
+                    type=int,
+                    default=16,
+                    help="Batch size for training")
 parser.add_argument("--epochs",
                     type=int,
                     default=1,
@@ -163,6 +186,15 @@ parser.add_argument("--lora_alpha",
 # ------------------------------------------------------------
 # Dataset
 # ------------------------------------------------------------
+parser.add_argument("--dataset",
+                    type=str,
+                    choices=["cifar10", "imagefolder"],
+                    default="none",
+                    help="Dataset to use for training (cifar10, celebA, imagefolder (need to be prepared correctly in data/imagefolder previously))")
+parser.add_argument("--subset_size",
+                    type=int,
+                    default=None,
+                    help="Subset size for training (only for mnist and cifar10)")
 
 # ------------------------------------------------------------
 # Output
@@ -179,6 +211,10 @@ parser.add_argument("--save_model",
                     const=True,
                     default=False,
                     help="If set, will save the model parameters for future reuse without re-downloading the whole thing")
+parser.add_argument("--lora_name",
+                    type=str,
+                    default="default",
+                    help="Name of the LoRA model to save")
 parser.add_argument("--save_name",
                     type=str,
                     default="output",
@@ -186,11 +222,6 @@ parser.add_argument("--save_name",
 
 
 args = parser.parse_args()
-
-
-# =======================================
-# Argument Validation
-# =======================================
 
 
 # =======================================
@@ -240,7 +271,7 @@ custom_scheduler = NoiseScheduler(
     beta_start=args.beta_start,
     beta_end=args.beta_end,
     s=args.cosine_s,
-    device=device,
+    device=device
 )
 
 
@@ -286,25 +317,21 @@ if args.experiment == "baseline":
         guidance_scale=args.guidance_scale,
         seed=args.seed
     )
-    images = images if isinstance(images, (list, tuple)) else list(images)
+    images = _images_to_pil_list(images)
     if len(images) == 1:
         image = images[0]
-        if torch.is_tensor(image):
-            image = transforms.ToPILImage()(image.detach().cpu().clamp(0, 1))
         image.save(f"{image_save_path}.png")
     else:
         image_save_path.mkdir(parents=True, exist_ok=True)
         for i, img in enumerate(images):
-            if torch.is_tensor(img):
-                img = transforms.ToPILImage()(img.detach().cpu().clamp(0, 1))
             img.save(os.path.join(image_save_path, f"image_{i}.png"))
 
 
 # ============================================================
 # Experiment B
 # ============================================================
-elif args.experiment == "custom_sampling":
-    print("\nTiny-SD Scheduler + Tiny-SD UNet + OWN DDPM/DDIM sampler")
+elif args.experiment == "custom_scheduler_and_sampling":
+    print("\nTiny-SD Scheduler for learning + Tiny-SD UNet + OWN DDPM/DDIM sampler and Scheduler for inference")
 
     images = pipeline.sample_custom(
         prompts=args.prompts,
@@ -316,235 +343,179 @@ elif args.experiment == "custom_sampling":
         seed=args.seed,
         eta=args.eta
     )
-    images = images if isinstance(images, (list, tuple)) else list(images)
+    images = _images_to_pil_list(images)
     if len(images) == 1:
         image = images[0]
-        if torch.is_tensor(image):
-            image = transforms.ToPILImage()(image.detach().cpu().clamp(0, 1))
         image.save(f"{image_save_path}.png")
     else:
         image_save_path.mkdir(parents=True, exist_ok=True)
         for i, img in enumerate(images):
-            if torch.is_tensor(img):
-                img = transforms.ToPILImage()(img.detach().cpu().clamp(0, 1))
             img.save(os.path.join(image_save_path, f"image_{i}.png"))
 
 
-"""
 # ============================================================
-# Experiment C
+# Experiments C/D - Fine-tuning (LoRA or not)
 # ============================================================
+elif args.experiment in ("finetune", "lora"):
+    print("\n" + "=" * 70)
+    print(f"EXPERIMENT: {args.experiment.upper()}")
+    print("=" * 70)
 
-elif args.experiment == "custom_scheduler":
+    # --------------------------------------------------------
+    # 1. Freeze VAE + text encoder
+    # --------------------------------------------------------
+    print("\n[1/6] Freezing VAE...")
+    pipeline.freeze_vae()
+    print("      ✓ VAE frozen")
 
-    print(
-        "\nTiny-SD UNet + YOUR NoiseScheduler "
-        "+ YOUR DDPM sampler"
-    )
+    print("\n[2/6] Freezing text encoder...")
+    pipeline.freeze_text_encoder()
+    print("      ✓ Text encoder frozen")
 
+    # --------------------------------------------------------
+    # 2. Configure UNet
+    # --------------------------------------------------------
+    if args.experiment == "lora":
+        print("\n[3/6] Enabling LoRA...")
+        pipeline.enable_lora(rank=args.lora_rank, alpha=args.lora_alpha)
+        trainable = list(pipeline.trainable_parameters())
+        print(f"      ✓ LoRA enabled")
+        print(f"      Trainable tensors: {len(trainable)}")
+    else:
+        print("\n[3/6] Enabling full UNet fine-tuning...")
+        pipeline.unet.requires_grad_(True)
+        trainable = list(pipeline.unet.parameters())
+        print("      ✓ UNet trainable")
+
+    # --------------------------------------------------------
+    # 3. Dataset
+    # --------------------------------------------------------
+    print("\n[4/6] Loading dataset...")
+    if args.dataset == "cifar10":
+        print("      Dataset: CIFAR-10")
+        loader = load_cifar10(batch_size=args.training_batch_size, downsample=(args.height, args.width), grayscale=False, normalize=True, flatten=False, train=True, subset_size=args.subset_size)
+    elif args.dataset == "imagefolder":
+        dataset_path = PROJECT_ROOT / "data" / "imagefolder"
+        if not dataset_path.exists():
+            raise FileNotFoundError(f"Dataset not found:\n{dataset_path}")
+
+        transform = transforms.Compose([
+            transforms.Resize((args.height, args.width), interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+        ])
+        dataset = datasets.ImageFolder(root=str(dataset_path), transform=transform)
+        loader = DataLoader(dataset, batch_size=args.training_batch_size, shuffle=True)
+    else:
+        raise ValueError(f"Unknown dataset: {args.dataset}")
+
+    pipeline.class_names = getattr(loader, "class_names", None)
+    
+    print(f"      ✓ Dataset loaded")
+    print(f"      Batches: {len(loader)}")
+    print("      Dataset captions:")
+    for i, caption in enumerate(pipeline.class_names or []):
+        print(f"        {i}: {caption}")
+
+    # --------------------------------------------------------
+    # 4. Optimizer
+    # --------------------------------------------------------
+    trainable_parameters = [p for p in pipeline.trainable_parameters() if p.requires_grad]
+    if len(trainable_parameters) == 0:
+        raise RuntimeError("No trainable parameters found!")
+    n_parameters = sum(p.numel() for p in trainable_parameters)
+
+    print("\nTrainable parameters:")
+    print(f"      {n_parameters:,}")
+
+    optimizer = torch.optim.AdamW(trainable_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
+
+    # --------------------------------------------------------
+    # 5. Training
+    # --------------------------------------------------------
+    print("\n[5/6] Starting training...")
+    print("-" * 70)
+    for epoch in range(args.epochs):
+        pipeline.unet.train()
+
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch_idx, batch in enumerate(loader):
+            if isinstance(batch, (list, tuple)):
+                images = batch[0]
+                labels = (batch[1] if len(batch) > 1 else None)
+            else:
+                images = batch
+                labels = None
+            images = images.to(device)
+
+            loss = pipeline.train_step(images, optimizer=optimizer, gradient_clip_value=args.gradient_clip, prompts=None, labels=labels)
+
+            total_loss += float(loss)
+            num_batches += 1
+
+            print(f"Epoch {epoch + 1}/{args.epochs} | batch {batch_idx + 1}/{len(loader)} | loss={loss:.6f}", flush=True)
+
+        mean_loss = total_loss / max(num_batches, 1)
+        print(f"\n>>> Epoch {epoch + 1}/{args.epochs} | mean loss = {mean_loss:.6f}\n", flush=True)
+
+    # --------------------------------------------------------
+    # 6. Save
+    # --------------------------------------------------------
+    print("[6/6] Saving model...")
+    if args.save_model:
+        if args.experiment == "lora":
+            pipeline.save_lora_adapter(model_save_path, adapter_name=args.lora_name)
+            pipeline.save_finetuned_model(model_save_path)
+            print(f"✓ LoRA saved to {model_save_path / args.lora_name}")
+        else:
+            pipeline.save_finetuned_model(model_save_path)
+            print(f"✓ Fine-tuned UNet saved to {model_save_path}")
+
+    # --------------------------------------------------------
+    # Sampling
+    # --------------------------------------------------------
+    print("\n" + "=" * 70)
+    print("SAMPLING AFTER TRAINING")
+    print("=" * 70)
+
+    print(f"Sampler          : {args.sampler}")
+    print(f"Steps            : {args.num_inference_steps}")
+    print(f"Guidance scale   : {args.guidance_scale}")
+    print(f"Resolution       : {args.width}x{args.height}")
+
+    print("\nGenerating images...", flush=True)
     images = pipeline.sample_custom(
-        prompt=args.prompt,
+        prompts=args.prompts,
+        method=args.sampler,
+        height=args.height,
+        width=args.width,
         steps=args.num_inference_steps,
         guidance_scale=args.guidance_scale,
         seed=args.seed,
+        eta=args.eta
     )
+    print("✓ Sampling finished")
 
-    output_dir = Path(args.save_dir)
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    images = _images_to_pil_list(images)
+    print(f"Generated {len(images)} image(s)")
 
-    from PIL import Image
-    import numpy as np
-
-    for i in range(images.shape[0]):
-
-        image = (
-            images[i]
-            .permute(1, 2, 0)
-            .cpu()
-            .numpy()
-        )
-
-        image = Image.fromarray(
-            (image * 255).astype(np.uint8)
-        )
-
-        image.save(
-            output_dir
-            / f"{args.save_name}_{i}.png"
-        )
-
-
-# ============================================================
-# Experiments D/E - Training
-# ============================================================
-
-elif args.experiment in {
-    "finetune",
-    "lora",
-}:
-
-    if args.dataset == "none":
-
-        raise ValueError(
-            "Training requires --dataset imagefolder"
-        )
-
-    # --------------------------------------------------------
-    # Freeze VAE
-    # --------------------------------------------------------
-
-    pipeline.freeze_vae()
-
-    # --------------------------------------------------------
-    # Freeze text encoder
-    # --------------------------------------------------------
-
-    pipeline.freeze_text_encoder()
-
-    # --------------------------------------------------------
-    # UNet
-    # --------------------------------------------------------
-
-    if args.experiment == "lora":
-
-        print("\nEnabling LoRA...")
-
-        pipeline.enable_lora(
-            rank=args.lora_rank,
-            alpha=args.lora_alpha,
-        )
-
-    else:
-
-        print("\nFull UNet fine-tuning...")
-
-        pipeline.unet.requires_grad_(
-            True
-        )
-
-    # --------------------------------------------------------
-    # Dataset
-    # --------------------------------------------------------
-
-    transform = transforms.Compose([
-        transforms.Resize(
-            (args.height, args.width)
-        ),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            [0.5, 0.5, 0.5],
-            [0.5, 0.5, 0.5],
-        ),
-    ])
-
-    dataset = datasets.ImageFolder(
-        args.data_dir,
-        transform=transform,
-    )
-
-    loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    # --------------------------------------------------------
-    # Optimizer
-    # --------------------------------------------------------
-
-    optimizer = torch.optim.AdamW(
-        pipeline.trainable_parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay,
-    )
-
-    # --------------------------------------------------------
-    # Training
-    # --------------------------------------------------------
-
-    for epoch in range(args.epochs):
-
-        total_loss = 0.0
-
-        for images, labels in loader:
-
-            images = images.to(
-                device
-            )
-
-            # ------------------------------------------------
-            # IMPORTANT:
-            #
-            # ImageFolder labels are not prompts.
-            #
-            # For now use one prompt.
-            # Replace this with your dataset captions.
-            # ------------------------------------------------
-
-            prompts = [
-                args.prompt
-                for _ in range(images.shape[0])
-            ]
-
-            loss = pipeline.training_step(
-                images,
-                prompts,
-                optimizer,
-            )
-
-            total_loss += loss
-
-        mean_loss = (
-            total_loss
-            / len(loader)
-        )
-
-        print(
-            f"Epoch {epoch + 1}/{args.epochs} "
-            f"| loss = {mean_loss:.6f}"
-        )
-
-    # --------------------------------------------------------
+    # ----------------------------------------------------
     # Save
-    # --------------------------------------------------------
+    # ----------------------------------------------------
+    images = _images_to_pil_list(images)
+    if len(images) == 1:
+        image = images[0]
+        image.save(f"{image_save_path}.png")
+        print(f"✓ Saved: {image_save_path}.png")
+    else:
+        image_save_path.mkdir(parents=True, exist_ok=True)
+        for i, img in enumerate(images):
+            img.save(os.path.join(image_save_path, f"image_{i}.png"))
+        print(f"✓ Saved {len(images)} images to: {image_save_path}")
 
-    if args.save_model:
-
-        output_dir = Path(
-            args.save_dir
-        )
-
-        output_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        if args.experiment == "lora":
-
-            pipeline.save_lora(
-                output_dir
-            )
-
-            print(
-                f"LoRA saved to {output_dir}"
-            )
-
-        else:
-
-            torch.save(
-                pipeline.unet.state_dict(),
-                output_dir
-                / "finetuned_unet.pt",
-            )
-
-            print(
-                "UNet saved."
-            )
-"""
+    print("\nDone.")
 
 
 # === FILE: NRT/NRT_fine_tuning/test.py ===

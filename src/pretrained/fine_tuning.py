@@ -27,13 +27,13 @@ class PretrainedFineTuning:
     def __init__(self, 
         model_path: str, 
         device: str = "cpu",
-        custom_scheduler: Optional[NoiseScheduler] = None
+        custom_scheduler: Optional[NoiseScheduler] = None,
+        class_names: Optional[list[str]] = None
     ):
         self.device = device
 
         # Load Tiny-SD model
-        dtype = torch.float16 if device == "cuda" else torch.float32
-        self.pipe = StableDiffusionPipeline.from_pretrained(model_path, torch_dtype=dtype, safety_checker=None)
+        self.pipe = StableDiffusionPipeline.from_pretrained(model_path, torch_dtype=torch.float32, safety_checker=None)
         self.pipe = self.pipe.to(device)
 
         # Components
@@ -45,6 +45,9 @@ class PretrainedFineTuning:
 
         # Scheduler
         self.custom_scheduler = custom_scheduler
+
+        # Optional label -> prompt mapping for class-conditional fine-tuning
+        self.class_names = class_names
 
     # =============================
     # Freeze components
@@ -92,10 +95,20 @@ class PretrainedFineTuning:
     # =============================
     @torch.no_grad()
     def encode_prompt(self, prompts):
+        if isinstance(prompts, str):
+            prompts = [prompts]
         tokens = self.tokenizer(prompts, padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True, return_tensors="pt")
         input_ids = tokens.input_ids.to(self.device)
         text_embeddings = self.text_encoder(input_ids)[0]
         return text_embeddings
+
+    @torch.no_grad()
+    def encode_labels(self, labels, template: str = "a photo of a {}"): # for cifar10
+        if self.class_names is None:
+            raise ValueError("class_names must be provided to convert labels into prompts.")
+
+        prompts = [template.format(self.class_names[int(label)]) for label in labels]
+        return self.encode_prompt(prompts)
 
     # =============================
     # Training timestep
@@ -142,11 +155,11 @@ class PretrainedFineTuning:
         self.unet.load_lora_adapter(load_path, adapter_name=adapter_name)
 
     def save_finetuned_model(self, save_path: str):
-        self.save_path.mkdir(parents=True, exist_ok=True)
+        save_path.mkdir(parents=True, exist_ok=True)
         self.pipe.save_pretrained(save_path)
 
     def load_finetuned_model(self, load_path: str):
-        self.pipe = StableDiffusionPipeline.from_pretrained(load_path, torch_dtype=torch.float16 if self.device == "cuda" else torch.float32, safety_checker=None)
+        self.pipe = StableDiffusionPipeline.from_pretrained(load_path, torch_dtype=torch.float32, safety_checker=None)
         self.pipe = self.pipe.to(self.device)
         self.vae = self.pipe.vae
         self.unet = self.pipe.unet
@@ -162,18 +175,25 @@ class PretrainedFineTuning:
     # =============================
     # Training
     # =============================
-    def train_step(self, images, prompts, optimizer, gradient_clip_value: float = 1.0):
-        self.unet.train()
+    def train_step(self, images, optimizer, gradient_clip_value: float = 1.0, prompts=None, labels=None):
         
         # VAE : Encode image -> latent
         with torch.no_grad():
             latents = self.encode_image(images)
-            text_embeddings = self.encode_prompt(prompts)
+            if prompts is not None:
+                text_embeddings = self.encode_prompt(prompts)
+            elif labels is not None:
+                text_embeddings = self.encode_labels(labels)
+            else:
+                text_embeddings = self.encode_prompt([""] * latents.shape[0])
+
+        if optimizer is None:
+            raise ValueError("optimizer must be provided.")
 
         # Timestep
         T = self.custom_scheduler.timesteps
         batch_size = latents.shape[0]
-        t = torch.randint( 0, T, (batch_size,), device=self.device,).long()
+        t = torch.randint(0, T, (batch_size,), device=self.device,).long()
 
         # Noise
         noise = torch.randn_like(latents)
@@ -318,7 +338,4 @@ class PretrainedFineTuning:
         return images
 
 
-
-   
-    ...
 # === FILE: NRT/NRT_fine_tuning/test.py ===
