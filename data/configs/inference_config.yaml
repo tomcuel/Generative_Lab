@@ -1,0 +1,7 @@
+model_type: stable_diffusion
+num_inference_steps: 20
+description: "a futuristic city at night"
+batch_size: 1
+guidance_scale: 7.5
+height: 512
+width: 512

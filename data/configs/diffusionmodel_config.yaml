@@ -1,0 +1,66 @@
+model_type: res_unet
+loss: mse
+num_classes: null
+cond_drop_prob: 0.1
+guidance_scale: 0.9
+image_size: 32
+image_channels: 3
+base_channels: 64
+channel_mults: 
+  - 1
+  - 2 
+  - 4
+time_emb_dim: 128
+time_width_coef: 4
+
+# Convolution
+use_attention: true
+attention_resolutions: 
+  - 8
+num_heads: 4
+dropout: 0.0
+kernel_size: 3
+stride: 1
+padding: 1
+use_batch_norm: false
+num_groups: 8
+eps_groupnorm: 1.0e-05
+down_kernel_size: 4
+down_stride: 2
+down_padding: 1
+down_num_res_blocks: 1
+up_kernel_size: 4
+up_stride: 2
+up_padding: 1
+up_num_res_blocks: 1
+
+# Diffusion
+timesteps: 1000
+beta_schedule: linear
+beta_start: 0.0001
+beta_end: 0.02
+s: 0.008
+
+# Training
+learning_rate: 0.0002
+beta1: 0.5
+beta2: 0.999
+weight_decay: 0.0
+batch_size: 128
+use_torch_compile: false
+compile_mode: reduce-overhead
+
+# Sampling
+use_ddim: false
+ddim_steps: 50
+use_ema: false
+ema_decay: 0.9999
+
+# Latent Diffusion
+use_latent_diffusion: false
+latent_dim: 16
+latent_hidden_dim: 64
+latent_kernel_size: 4
+latent_stride: 2
+latent_padding: 1
+latent_scale_factor: 0.18215

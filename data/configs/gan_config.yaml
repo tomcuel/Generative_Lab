@@ -1,0 +1,55 @@
+architecture: "GAN"
+loss: "Default"
+latent_dim: 32
+
+# For MLPs
+input_dim: 784
+hidden_dims: 
+    - 128
+    - 64
+
+# For DCGANs
+image_size: 28
+image_channels: 1
+kernel_size: 4
+stride: 2
+padding: 1
+noise_coef: 0.03
+
+# For CGANs
+num_classes: 10
+
+# For Unrolled GANs
+unrolled_steps: 5
+
+# For WGANs
+weight_clip: 0.01
+gradient_penalty_lambda: 10.0
+n_critic: 5
+
+# For LSGANs
+lsgan_lambda: 0.5
+
+# For StyleGANs
+style_dim: 64
+kernel_size_style_gen: 3
+stride_style_gen: 1
+padding_style_gen: 1
+noise_weight: 0.05
+mixing_prob: 0.9
+
+# Regularization
+dropout: null
+batch_norm: false
+spectral_norm_on: false
+
+# Training
+learning_rate: 0.001
+step_size: 20
+weight_decay: 0.00001
+beta1: 0.5
+beta2: 0.999
+
+# EMA Sampling
+is_ema: false
+ema_decay: 0.999

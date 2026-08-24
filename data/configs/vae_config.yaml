@@ -1,0 +1,32 @@
+model_type: vae
+architecture: mlp
+reconstruction_loss: bce
+
+input_dim: 784
+hidden_dims: 
+    - 128
+    - 64
+latent_dim: 32
+
+# for CNN
+image_channels: 1
+image_size: 28
+kernel_size: 4
+stride: 2
+padding: 1
+
+# VQ-VAE specific
+num_embeddings: 256
+embedding_dim: 64
+beta_vq: 0.25
+
+# Regularization
+dropout: 0.0
+use_batchnorm: false
+
+# Training
+beta_kl: 1.0
+gamma: 0.5
+learning_rate: 0.001
+step_size: 20
+weight_decay: 0.00001
