@@ -901,7 +901,7 @@ class BaseVAE(nn.Module):
         
         state_dict = torch.load(path, map_location=self.device)
         self.cfg = VAEConfig(**state_dict["cfg"])
-        self.state_dict() = state_dict["model_state_dict"]
+        self.load_state_dict(state_dict["model_state_dict"])
         if print_message:
             print(f"Loaded VAE model from {path}")
         
