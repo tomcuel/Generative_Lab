@@ -2,6 +2,8 @@
 # Library Imports
 # =======================================
 import argparse
+import matplotlib.pyplot as plt
+import numpy as np
 import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 from pathlib import Path
@@ -60,12 +62,12 @@ from src.models.VAEs import (
 # Helpers
 # ===========================
 def print_section(title):
-    print("=" * 50)
+    print("\n\n" + "=" * 50)
     print(title)
     print("=" * 50)
 
 def print_subsection(title):
-    print("-" * 50)
+    print("\n" + "-" * 50)
     print(title)
     print("-" * 50)
 
@@ -127,7 +129,30 @@ parser.add_argument("--dataset",
                     type=str,
                     choices=["cifar10", "fashion_mnist", "imagefolder", "mnist"],
                     default="none",
-                    help="Dataset to use for training (cifar10, celebA, imagefolder (need to be prepared correctly in data/imagefolder previously))")
+                    help="Dataset to use for training (cifar10, fashion_mnist, imagefolder, mnist)")
+parser.add_argument("--downsample_size",
+                    type=int,
+                    nargs="+",
+                    default=None,
+                    help="Downsample size for the images (ex : 16x16 for CIFAR10 instead of 32x32)")
+parser.add_argument("--grayscale",
+                    type=str2bool,
+                    nargs="?",
+                    const=True,
+                    default=True,
+                    help="If set, will convert images to grayscale")
+parser.add_argument("--normalize",
+                    type=str2bool,
+                    nargs="?",
+                    const=True,
+                    default=False,
+                    help="If set, will normalize images to [-1, 1]")
+parser.add_argument("--flatten",
+                    type=str2bool,
+                    nargs="?",
+                    const=True,
+                    default=True,
+                    help="If set, will flatten images to 1D vectors")
 parser.add_argument("--subset_size",
                     type=int,
                     default=None,
@@ -140,6 +165,28 @@ parser.add_argument("--is_training",
                     const=True,
                     default=False,
                     help="If set, will run the training loop")
+parser.add_argument("--n_sample",
+                    type=int,
+                    default=16,
+                    help="Number of samples to generate during training for visualization")
+
+# Saving
+parser.add_argument("--show_architecture",
+                    type=str2bool,
+                    nargs="?",
+                    const=True,
+                    default=False,
+                    help="If set, will print the architecture of the model")
+parser.add_argument("--save_model",
+                    type=str2bool,
+                    nargs="?",
+                    const=True,
+                    default=False,
+                    help="If set, will save the model parameters for future reuse without re-downloading the whole thing")
+parser.add_argument("--model_name",
+                    type=str,
+                    default=None,
+                    help="Name of the model to save/load weights for inference of those 'from scratch' models (vae, gan, diffusion) or the pretrained models (inference, finetuning)")
 
 # Diffusion Scheduler
 parser.add_argument("--timesteps",
@@ -208,19 +255,6 @@ parser.add_argument("--guidance_scale",
                     type=float,
                     default=7.5,
                     help="Guidance scale for image generation (default: 7.5, no guidance)")
-# Saving
-parser.add_argument("--show_architecture",
-                    type=str2bool,
-                    nargs="?",
-                    const=True,
-                    default=False,
-                    help="If set, will print the architecture of the model")
-parser.add_argument("--save_model",
-                    type=str2bool,
-                    nargs="?",
-                    const=True,
-                    default=False,
-                    help="If set, will save the model parameters for future reuse without re-downloading the whole thing")
 
 # -----------------------------------------------------------------------
 # VAEs arguments
@@ -228,7 +262,7 @@ parser.add_argument("--save_model",
 parser.add_argument("--vae_config", 
                     type=str, 
                     default=None, 
-                    help="Path to the VAE configuration file (e.g. data/configs/vae_config.yaml). If not provided, CLI arguments will be used to create the VAEConfig.")
+                    help="Name to the VAE configuration file (e.g. vae_config for data/configs/vae_config.yaml). If not provided, CLI arguments will be used to create the VAEConfig.")
 parser.add_argument("--vae_model_type", 
                     type=str, 
                     default="vae", 
@@ -318,7 +352,7 @@ parser.add_argument("--vae_gamma",
 parser.add_argument("--gan_config", 
                     type=str, 
                     default=None, 
-                    help="Path to the GAN configuration file (e.g. data/configs/gan_config.yaml). If not provided, CLI arguments will be used to create the GANConfig.")
+                    help="Name of the GAN configuration file (e.g. gan_config for data/configs/gan_config.yaml). If not provided, CLI arguments will be used to create the GANConfig.")
 parser.add_argument("--gan_architecture", 
                     type=str, 
                     default="GAN", 
@@ -334,6 +368,10 @@ parser.add_argument("--gan_latent_dim",
                     default=32,
                     help="Latent dimension for the GAN model")
 # For MLPs
+parser.add_argument("--gan_input_dim",
+                    type=int,
+                    default=784,
+                    help="Input dimension for MLP GAN (flattened image size)")
 parser.add_argument("--gan_hidden_dims",
                     type=int,
                     nargs="+",
@@ -460,7 +498,7 @@ parser.add_argument("--gan_ema_decay",
 parser.add_argument("--diffusion_config",
                     type=str,
                     default=None,
-                    help="Path to the diffusion configuration file (e.g. data/configs/diffusion_config.yaml). If not provided, CLI arguments will be used to create the DiffusionConfig.")
+                    help="Name of the diffusion configuration file (e.g. diffusion_config for data/configs/diffusion_config.yaml). If not provided, CLI arguments will be used to create the DiffusionConfig.")
 parser.add_argument("--diffusion_model_type",
                     type=str,
                     default="res_unet",
@@ -666,6 +704,10 @@ parser.add_argument("--diffusion_latent_scale_factor",
 # -----------------------------------------------------------------------
 # inference.py arguments
 # -----------------------------------------------------------------------
+parser.add_argument("--inference_config",
+                    type=str,
+                    default=None,
+                    help="Name of the inference configuration file (e.g. inference_config for data/configs/inference_config.yaml). If not provided, default CLI arguments will be used.")
 parser.add_argument("--inference_model_type", 
                     type=str, 
                     default="ddpm", 
@@ -683,6 +725,10 @@ parser.add_argument("--inference_batch_size",
 # -----------------------------------------------------------------------
 # fine_tuning.py arguments
 # -----------------------------------------------------------------------
+parser.add_argument("--finetuning_config",
+                    type=str,
+                    default=None,
+                    help="Name of the fine-tuning configuration file (e.g. finetuning_config for data/configs/finetuning_config.yaml). If not provided, default CLI arguments will be used.")
 parser.add_argument("--finetuning_experiment",
                     type=str,
                     choices=["baseline", "custom_scheduler_and_sampling", "finetune", "lora"],
@@ -744,6 +790,17 @@ if args.launch_mode == "finetuning":
 # =======================================
 # Path Setup
 # =======================================
+SAVE_FOLDER = PROJECT_ROOT / "data"
+SAVE_FOLDER.mkdir(parents=True, exist_ok=True)
+
+CONFIGS_FOLDER = SAVE_FOLDER / "configs"
+CONFIGS_FOLDER.mkdir(parents=True, exist_ok=True)
+
+SAVE_MODEL_FOLDER = SAVE_FOLDER / "models_parameters"
+SAVE_MODEL_FOLDER.mkdir(parents=True, exist_ok=True)
+
+OUTPUTS_FOLDER = SAVE_FOLDER / "outputs"
+OUTPUTS_FOLDER.mkdir(parents=True, exist_ok=True)
 
 
 # =======================================
@@ -761,25 +818,289 @@ else:
 
 
 # =======================================
-# YAML Configuration or CLI Arguments extraction
-# =======================================
-
-
-# =======================================
 # Launcher Logic
 # =======================================
+
+# -----------------------------------------------------------------------
+# Dataset Loading
+# -----------------------------------------------------------------------
+loader = None
+if args.dataset != "none":
+    if args.dataset == "cifar10":
+        print_section("CIFAR-10 Dataset Loading...")
+        if args.subset_size is not None:
+            loader = load_cifar10(
+                batch_size=args.training_batch_size,
+                downsample=args.downsample_size,
+                grayscale=args.grayscale,
+                normalize=args.normalize,
+                flatten=args.flatten,
+                train=True,
+                subset_size=args.subset_size
+            )
+        else:
+            loader = load_cifar10(
+                batch_size=args.training_batch_size,
+                downsample=args.downsample_size,
+                grayscale=args.grayscale,
+                normalize=args.normalize,
+                flatten=args.flatten,
+                train=True
+            )
+    elif args.dataset == "fashion_mnist":
+        print_section("Fashion-MNIST Dataset Loading...")
+        loader = load_fashion_mnist(
+            batch_size=args.training_batch_size,
+            downsample=args.downsample_size,
+            normalize=args.normalize,
+            flatten=args.flatten,
+            train=True, 
+            root=None
+        )
+    elif args.dataset == "mnist":
+        print_section("MNIST Dataset Loading...")
+        loader = load_mnist(
+            batch_size=args.training_batch_size,
+            downsample=args.downsample_size,
+            normalize=args.normalize,
+            flatten=args.flatten,
+            train=True, 
+            root=None
+        )
+    elif args.dataset == "imagefolder":
+        print_section("ImageFolder Dataset Loading...")
+        raise NotImplementedError("ImageFolder dataset loading is not implemented yet. Please use CIFAR-10, FashionMNIST, or MNIST for now.")
+
+    input_dim = None
+    if args.dataset in ["fashion_mnist", "mnist"] or (args.dataset == "cifar10" and args.flatten==True):
+        x, _ = next(iter(loader))
+        input_dim = x.shape[1]
+
+    image_channels = None
+    image_size = None
+    if args.dataset == "cifar10" and args.flatten==False:
+        image_channels = x.shape[1]
+        image_size = x.shape[2]
+
+    num_classes = None
+    if args.dataset == "cifar10":
+        num_classes = 10
+    elif args.dataset == "fashion_mnist":
+        num_classes = 10
+    elif args.dataset == "mnist":
+        num_classes = 10
 
 # -----------------------------------------------------------------------
 # VAE
 # -----------------------------------------------------------------------
 """
+Minimum command to launch VAE training:
+
+python src/launcher.py 
+    --launch_mode vae 
+    --seed 42 
+    --name sample_vae_test
+    --dataset mnist 
+    --is_training 
+    --n_sample 9 
+    --save_model 
+    --model_name vae_test
+    --epochs 1 
+    --vae_config vae_config
+"""
 if args.launch_mode == "vae":
-    vae_config = 
+    print_section("Launching in VAE mode...")
+
+    vae_input_dim = input_dim if input_dim is not None else args.vae_input_dim
+    vae_image_channels = image_channels if image_channels is not None else args.vae_image_channels
+    vae_image_size = image_size if image_size is not None else args.vae_image_size
+
+    config_path = os.path.join(CONFIGS_FOLDER, f"{args.vae_config}.yaml")
+    if args.vae_config is not None:
+        config_dict = yaml.safe_load(open(config_path, "r"))
+        vae_config = VAEConfig(**config_dict)
+        vae_config.input_dim = vae_input_dim
+        vae_config.image_channels = vae_image_channels
+        vae_config.image_size = vae_image_size
+    else:
+        vae_config = VAEConfig(
+            model_type=args.vae_model_type,
+            architecture=args.vae_architecture,
+            input_dim=vae_input_dim,
+            hidden_dims=args.vae_hidden_dims,
+            latent_dim=args.vae_latent_dim,
+            image_channels=vae_image_channels,
+            image_size=vae_image_size,
+            kernel_size=args.vae_kernel_size,
+            stride=args.vae_stride,
+            padding=args.vae_padding,
+            num_embeddings=args.vae_num_embeddings,
+            embedding_dim=args.vae_embedding_dim,
+            beta_vq=args.vae_beta_vq,
+            reconstruction_loss=args.vae_reconstruction_loss,
+            dropout=args.vae_dropout,
+            use_batchnorm=args.vae_use_batchnorm,
+            beta_kl=args.vae_beta_kl,
+            gamma=args.vae_gamma,
+            learning_rate=args.learning_rate,
+            step_size=args.step_size,
+            weight_decay=args.weight_decay
+        )
+        yaml.dump(vae_config.__dict__, open(config_path, "w"))
+    print_subsection("VAE Configuration:")
+    for key, value in vae_config.__dict__.items():
+        print(f"{key}: {value}")
+
+    if vae_config.model_type in ["vae", "vqvae"]:
+        vae = BaseVAE(cfg=vae_config, device=device)
+    elif vae_config.model_type == "fastvae":
+        vae = FastCNNVAE(cfg=vae_config, device=device)
+    print_subsection("VAE Architecture:")
+    print(vae)
+
+    if args.is_training:
+        print_subsection("Starting VAE Training...")
+        metrics = vae.fit(loader, epochs=args.epochs, verbose=True)
+        print()
+        print_subsection("Training Metrics:")
+        for epoch, metric in enumerate(metrics):
+            print(f"Epoch {epoch+1}: Loss={metric.loss:.4f}, Recon Loss={metric.recon:.4f}, KL Div={metric.kld:.4f}, VQ Loss={metric.vq:.4f}")
+        print()
+
+        if args.save_model:
+            print_subsection("Saving VAE Model...")
+            path = os.path.join(SAVE_MODEL_FOLDER, "VAE", f"{args.model_name}.pth")
+            vae.save(path)
+            print(f"VAE model saved to {path}")
+
+    else: # Load pre-trained model for inference
+        print_subsection("Loading Pre-trained VAE Model...")
+        path = os.path.join(SAVE_MODEL_FOLDER, "VAE", f"{args.model_name}.pth")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Pre-trained VAE model not found at {path}. Please train the model first or provide a valid path.")
+        vae.load(path)
+        print(f"VAE model loaded from {path}")
+
+    print_subsection("Running VAE Inference...")
+    vae.plot_image_samples(n=args.n_sample, n_rows=int(np.sqrt(args.n_sample)), save_path=os.path.join(OUTPUTS_FOLDER, f"{args.name}.png"))
+
 
 # -----------------------------------------------------------------------
 # GAN
 # -----------------------------------------------------------------------
+"""
+Minimum command to launch GAN training:
 
+python src/launcher.py 
+    --launch_mode gan 
+    --seed 42 
+    --name sample_gan_test
+    --dataset mnist 
+    --is_training 
+    --n_sample 5 
+    --save_model 
+    --model_name gan_test
+    --epochs 2
+    --gan_config gan_config
+"""
+if args.launch_mode == "gan":
+    print_section("Launching in GAN mode...")
+
+    gan_input_dim = input_dim if input_dim is not None else args.gan_input_dim
+    gan_image_channels = image_channels if image_channels is not None else args.gan_image_channels
+    gan_image_size = image_size if image_size is not None else args.gan_image_size
+    gan_num_classes = num_classes if num_classes is not None else args.gan_num_classes
+
+    config_path = os.path.join(CONFIGS_FOLDER, f"{args.gan_config}.yaml")
+    if args.gan_config is not None:
+        config_dict = yaml.safe_load(open(config_path, "r"))
+        gan_config = GANConfig(**config_dict)
+        gan_config.input_dim = gan_input_dim
+        gan_config.image_channels = gan_image_channels
+        gan_config.image_size = gan_image_size
+        gan_config.num_classes = gan_num_classes
+    else:
+        gan_config = GANConfig(
+            architecture=args.gan_architecture,
+            loss=args.gan_loss,
+            latent_dim=args.gan_latent_dim,
+            input_dim=gan_input_dim,
+            hidden_dims=args.gan_hidden_dims,
+            image_channels=gan_image_channels,
+            image_size=gan_image_size,
+            kernel_size=args.gan_kernel_size,
+            stride=args.gan_stride,
+            padding=args.gan_padding,
+            num_classes=gan_num_classes,
+            unrolled_steps=args.gan_unrolled_steps,
+            weight_clip=args.gan_weight_clip,
+            gradient_penalty_lambda=args.gan_gradient_penalty_lambda,
+            n_critic=args.gan_n_critic,
+            lsgan_lambda=args.gan_lsgan_lambda,
+            style_dim=args.gan_style_dim,
+            kernel_size_style_gen=args.gan_kernel_size_style_gen,
+            stride_style_gen=args.gan_stride_style_gen,
+            padding_style_gen=args.gan_padding_style_gen,
+            noise_weight=args.gan_noise_weight,
+            mixing_prob=args.gan_mixing_prob,
+            dropout=args.gan_dropout,
+            use_batchnorm=args.gan_use_batchnorm,
+            spectral_norm_on=args.gan_spectral_norm_on,
+            learning_rate=args.learning_rate,
+            step_size=args.step_size,
+            weight_decay=args.weight_decay,
+            beta1=args.gan_beta1,
+            beta2=args.gan_beta2,
+            is_ema=args.gan_is_ema,
+            ema_decay=args.gan_ema_decay
+        )
+        yaml.dump(gan_config.__dict__, open(config_path, "w"))
+    print_subsection("GAN Configuration:")
+    for key, value in gan_config.__dict__.items():
+        print(f"{key}: {value}")
+
+    gan = GAN(cfg=gan_config, device=device)
+    print_subsection("GAN Architecture:")
+    print(gan)
+
+    if args.is_training:
+        print_subsection("Starting GAN Training...")
+        G_losses, D_losses = [], []
+        history = gan.fit(loader, epochs=args.epochs, verbose=True)
+        G_losses.extend([hist.G_loss for hist in history])
+        D_losses.extend([hist.D_loss for hist in history])
+
+        plt.figure()
+        plt.plot(G_losses, label="Generator Loss")
+        plt.plot(D_losses, label="Discriminator Loss")
+        plt.legend()
+        plt.title(f"{args.name} Loss History on {args.dataset} dataset")
+        plt.xlabel("Epochs")
+        plt.ylabel("Loss")
+        plt.savefig(os.path.join(OUTPUTS_FOLDER, f"loss_history_{args.name}.png"))
+        plt.close()
+
+        if args.save_model:
+            print_subsection("Saving GAN Model...")
+            path = os.path.join(SAVE_MODEL_FOLDER, "GAN", f"{args.model_name}.pth")
+            gan.save(path)
+            print(f"GAN model saved to {path}")
+
+    else: # Load pre-trained model for inference
+        print_subsection("Loading Pre-trained GAN Model...")
+        path = os.path.join(SAVE_MODEL_FOLDER, "GAN", f"{args.model_name}.pth")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Pre-trained GAN model not found at {path}. Please train the model first or provide a valid path.")
+        gan.load(path)
+        print(f"GAN model loaded from {path}")
+
+    print_subsection("Running GAN Inference...")
+    samples = gan.sample(n=args.n_sample).numpy()
+    samples = (samples + 1) / 2  # Rescale from [-1, 1] to [0, 1] for visualization
+    plot_images(samples, n=args.n_sample, save_path=os.path.join(OUTPUTS_FOLDER, f"{args.name}.png"))
+
+
+"""
 # -----------------------------------------------------------------------
 # Diffusion Model
 # -----------------------------------------------------------------------
