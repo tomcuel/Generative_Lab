@@ -1225,11 +1225,9 @@ class FastCNNVAE(nn.Module):
         self.fc = nn.Linear(self.cfg.latent_dim, self.flatten_dim)
 
         self.decoder = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode="nearest"),          
-            nn.Conv2d(self.feature_shape[0], cfg.hidden_dims[0], cfg.kernel_size, stride=1, padding=cfg.padding),
+            nn.ConvTranspose2d(self.feature_shape[0], cfg.hidden_dims[0], cfg.kernel_size, stride=cfg.stride, padding=cfg.padding),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Upsample(scale_factor=2, mode="nearest"),          
-            nn.Conv2d(cfg.hidden_dims[0], cfg.image_channels, cfg.kernel_size, stride=1, padding=cfg.padding),
+            nn.ConvTranspose2d(cfg.hidden_dims[0], cfg.image_channels, cfg.kernel_size, stride=cfg.stride, padding=cfg.padding),
         )
 
     # -------------------------------
