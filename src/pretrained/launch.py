@@ -400,7 +400,7 @@ elif args.experiment in ("finetune", "lora"):
         print("\n[4/6] Loading dataset...")
         if args.dataset == "cifar10":
             print("      Dataset: CIFAR-10")
-            loader = load_cifar10(batch_size=args.training_batch_size, downsample=(args.height, args.width), grayscale=False, normalize=True, flatten=False, train=True, subset_size=args.subset_size)
+            loader = load_cifar10(batch_size=args.training_batch_size, downsample=(args.height, args.width), grayscale=False, normalize=True, flatten=False, train=True, subset_size=args.subset_size, root=None if args.is_nrt else str(PROJECT_ROOT / "data"))
         elif args.dataset == "imagefolder":
             dataset_path = PROJECT_ROOT / "data" / "imagefolder"
             if not dataset_path.exists():

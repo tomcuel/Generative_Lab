@@ -3,12 +3,16 @@
 # ===========================
 import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+from pathlib import Path
 from sklearn.datasets import make_blobs
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from typing import Optional, Tuple
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 # ===========================
