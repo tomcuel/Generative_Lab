@@ -76,7 +76,7 @@ def clear_data_dir(data_dir):
     os.system(f"rm -rf {data_dir}")
 
 def build_launch_command(args):
-    command = [sys.executable, os.path.join(PROJECT_ROOT, "src", "pretrained", "launch.py")]
+    command = [sys.executable, os.path.join(PROJECT_ROOT, "src", "launcher.py")]
     for key, value in args.items():
         command.append(f"--{key}")
         if isinstance(value, (list, tuple)):
@@ -138,7 +138,7 @@ parser.add_argument("--downsample_size",
 parser.add_argument("--grayscale",
                     type=str2bool,
                     nargs="?",
-                    const=True,
+                    const=False,
                     default=True,
                     help="If set, will convert images to grayscale")
 parser.add_argument("--normalize",
@@ -150,7 +150,7 @@ parser.add_argument("--normalize",
 parser.add_argument("--flatten",
                     type=str2bool,
                     nargs="?",
-                    const=True,
+                    const=False,
                     default=True,
                     help="If set, will flatten images to 1D vectors")
 parser.add_argument("--subset_size",
@@ -169,6 +169,11 @@ parser.add_argument("--n_sample",
                     type=int,
                     default=16,
                     help="Number of samples to generate during training for visualization")
+parser.add_argument("--sample_labels",
+                    type=int,
+                    nargs="+",
+                    default=None,
+                    help="Labels for conditional sampling (for CGAN)")
 
 # Saving
 parser.add_argument("--show_architecture",
@@ -186,7 +191,7 @@ parser.add_argument("--save_model",
 parser.add_argument("--model_name",
                     type=str,
                     default=None,
-                    help="Name of the model to save/load weights for inference of those 'from scratch' models (vae, gan, diffusion) or the pretrained models (inference, finetuning)")
+                    help="Name of the model to save/load weights for inference of those 'from scratch' models (vae, gan, diffusion)")
 
 # Diffusion Scheduler
 parser.add_argument("--timesteps",
@@ -233,8 +238,7 @@ parser.add_argument("--weight_decay",
                     default=1e-2,
                     help="Weight decay for training")
 
-# Inference and Fine-tuning 
-# Sampling 
+# Inference and Fine-tuning Sampling 
 parser.add_argument("--batch_size",
                     type=int,
                     default=1,
@@ -717,10 +721,6 @@ parser.add_argument("--inference_description",
                     type=str, 
                     default="a futuristic city at night", 
                     help="Description for stable diffusion model")
-parser.add_argument("--inference_batch_size",
-                    type=int,
-                    default=1,
-                    help="Number of images to generate in a batch")
 
 # -----------------------------------------------------------------------
 # fine_tuning.py arguments
@@ -836,7 +836,8 @@ if args.dataset != "none":
                 normalize=args.normalize,
                 flatten=args.flatten,
                 train=True,
-                subset_size=args.subset_size
+                subset_size=args.subset_size,
+                root=str(SAVE_FOLDER)
             )
         else:
             loader = load_cifar10(
@@ -845,7 +846,8 @@ if args.dataset != "none":
                 grayscale=args.grayscale,
                 normalize=args.normalize,
                 flatten=args.flatten,
-                train=True
+                train=True,
+                root=str(SAVE_FOLDER)
             )
     elif args.dataset == "fashion_mnist":
         print_section("Fashion-MNIST Dataset Loading...")
@@ -854,8 +856,8 @@ if args.dataset != "none":
             downsample=args.downsample_size,
             normalize=args.normalize,
             flatten=args.flatten,
-            train=True, 
-            root=None
+            train=True,
+            root=str(SAVE_FOLDER)
         )
     elif args.dataset == "mnist":
         print_section("MNIST Dataset Loading...")
@@ -864,8 +866,8 @@ if args.dataset != "none":
             downsample=args.downsample_size,
             normalize=args.normalize,
             flatten=args.flatten,
-            train=True, 
-            root=None
+            train=True,
+            root=str(SAVE_FOLDER)
         )
     elif args.dataset == "imagefolder":
         print_section("ImageFolder Dataset Loading...")
@@ -879,6 +881,7 @@ if args.dataset != "none":
     image_channels = None
     image_size = None
     if args.dataset == "cifar10" and args.flatten==False:
+        x, _ = next(iter(loader))
         image_channels = x.shape[1]
         image_size = x.shape[2]
 
@@ -1095,33 +1098,295 @@ if args.launch_mode == "gan":
         print(f"GAN model loaded from {path}")
 
     print_subsection("Running GAN Inference...")
-    samples = gan.sample(n=args.n_sample).numpy()
-    samples = (samples + 1) / 2  # Rescale from [-1, 1] to [0, 1] for visualization
+    labels = None
+    if gan_config.architecture in ["CGAN"]:
+        if gan_config.num_classes is None:
+            raise ValueError("For CGAN inference, num_classes must be specified in the GAN configuration.")
+        if args.sample_labels is not None:
+            if len(args.sample_labels) != args.n_sample:
+                raise ValueError(f"Number of sample labels ({len(args.sample_labels)}) must match n_sample ({args.n_sample}).")
+            for label in args.sample_labels:
+                if label < 0 or label >= gan_config.num_classes:
+                    raise ValueError(f"Sample label {label} is out of range for num_classes {gan_config.num_classes}.")
+            labels = torch.tensor(args.sample_labels, dtype=torch.long, device=device)
+        else:
+            labels = torch.randint(0, gan_config.num_classes, (args.n_sample,), device=device)
+    samples = gan.sample(n=args.n_sample, labels=labels).numpy()
+    if args.normalize:
+        samples = (samples + 1) / 2  # Rescale from [-1, 1] to [0, 1] for visualization
     plot_images(samples, n=args.n_sample, save_path=os.path.join(OUTPUTS_FOLDER, f"{args.name}.png"))
 
-
-"""
 # -----------------------------------------------------------------------
 # Diffusion Model
 # -----------------------------------------------------------------------
+"""
+Minimum command to launch Diffusion Model training:
+
+python src/launcher.py 
+    --launch_mode diffusion 
+    --seed 42 
+    --name sample_diffusion_test
+    --dataset mnist 
+# --dataset cifar10  --downsample_size 16 16 --grayscale --normalize --flatten --subset_size 10000 
+    --is_training 
+    --n_sample 5 
+    --save_model 
+    --model_name diffusion_test
+    --epochs 2
+    --diffusion_config diffusionmodel_config
+"""
+if args.launch_mode == "diffusion":
+    print("Launching in Diffusion Model mode...")
+
+    diffusion_image_channels = image_channels if image_channels is not None else args.diffusion_image_channels
+    diffusion_image_size = image_size if image_size is not None else args.diffusion_image_size
+    diffusion_num_classes = num_classes if num_classes is not None else args.diffusion_num_classes
+
+    config_path = os.path.join(CONFIGS_FOLDER, f"{args.diffusion_config}.yaml")
+    if args.diffusion_config is not None:
+        config_dict = yaml.safe_load(open(config_path, "r"))
+        diffusion_config = DiffusionConfig(**config_dict)
+        diffusion_config.image_channels = diffusion_image_channels
+        diffusion_config.image_size = diffusion_image_size
+        diffusion_config.num_classes = diffusion_num_classes
+    else:
+        diffusion_config = DiffusionConfig(
+            model_type=args.diffusion_model_type,
+            loss=args.diffusion_loss,
+            num_classes=diffusion_num_classes,
+            cond_drop_prob=args.diffusion_cond_drop_prob,
+            guidance_scale=args.diffusion_guidance_scale,
+            image_size=diffusion_image_size,
+            image_channels=diffusion_image_channels,
+            base_channels=args.diffusion_base_channels,
+            channel_mults=args.diffusion_channel_mults,
+            time_emb_dim=args.diffusion_time_emb_dim,
+            time_width_coef=args.diffusion_time_width_coef,
+            use_attention=args.diffusion_use_attention,
+            attention_resolutions=args.diffusion_attention_resolutions,
+            num_heads=args.diffusion_num_heads,
+            dropout=args.diffusion_dropout,
+            kernel_size=args.diffusion_kernel_size,
+            stride=args.diffusion_stride,
+            padding=args.diffusion_padding,
+            use_batch_norm=args.diffusion_use_batch_norm,
+            num_groups=args.diffusion_num_groups,
+            eps_groupnorm=args.diffusion_eps_groupnorm,
+            down_kernel_size=args.diffusion_down_kernel_size,
+            down_stride=args.diffusion_down_stride, 
+            down_padding=args.diffusion_down_padding,
+            down_num_res_blocks=args.diffusion_down_num_res_blocks,
+            up_kernel_size=args.diffusion_up_kernel_size,
+            up_stride=args.diffusion_up_stride,
+            up_padding=args.diffusion_up_padding,
+            up_num_res_blocks=args.diffusion_up_num_res_blocks,
+            timesteps=args.timesteps,
+            beta_schedule=args.beta_schedule,
+            beta_start=args.beta_start,
+            beta_end=args.beta_end,
+            s=args.cosine_s,
+            learning_rate=args.diffusion_learning_rate,
+            beta1=args.diffusion_beta1,
+            beta2=args.diffusion_beta2,
+            use_torch_compile=args.diffusion_use_torch_compile,
+            compile_mode=args.diffusion_compile_mode,
+            use_ddim=args.diffusion_use_ddim,
+            ddim_steps=args.diffusion_ddim_steps,
+            use_ema=args.diffusion_use_ema,
+            ema_decay=args.diffusion_ema_decay,
+            use_latent_diffusion=args.diffusion_use_latent_diffusion,
+            latent_dim=args.diffusion_latent_dim,
+            latent_hidden_dim=args.diffusion_latent_hidden_dim,
+            latent_kernel_size=args.diffusion_latent_kernel_size,
+            latent_stride=args.diffusion_latent_stride,
+            latent_padding=args.diffusion_latent_padding,
+            latent_scale_factor=args.diffusion_latent_scale_factor
+        )
+        yaml.dump(diffusion_config.__dict__, open(config_path, "w"))
+    print_subsection("Diffusion Model Configuration:")
+    for key, value in diffusion_config.__dict__.items():
+        print(f"{key}: {value}")
+
+    print_subsection("Initializing Diffusion Model...")
+    diffusion_model = DiffusionModel(cfg=diffusion_config, device=device)
+    print_subsection("Diffusion Model Architecture:")
+    print(diffusion_model)
+
+    if args.is_training:
+        print_subsection("Starting Diffusion Model Training...")
+        diffusion_model.fit(loader, epochs=args.epochs)
+
+        if args.save_model:
+            print_subsection("Saving Diffusion Model...")
+            path = os.path.join(SAVE_MODEL_FOLDER, "Diffusion", f"{args.model_name}.pth")
+            diffusion_model.save(path)
+            print(f"Diffusion model saved to {path}")
+
+    else: # Load pre-trained model for inference
+        print_subsection("Loading Pre-trained Diffusion Model...")
+        path = os.path.join(SAVE_MODEL_FOLDER, "Diffusion", f"{args.model_name}.pth")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Pre-trained Diffusion model not found at {path}. Please train the model first or provide a valid path.")
+        diffusion_model.load(path)
+        print(f"Diffusion model loaded from {path}")
+
+    print_subsection("Running Diffusion Model Inference...")
+    cond=None
+    if diffusion_config.num_classes is not None:
+        if args.sample_labels is not None:
+            if len(args.sample_labels) != args.n_sample:
+                raise ValueError(f"Number of sample labels ({len(args.sample_labels)}) must match n_sample ({args.n_sample}).")
+            for label in args.sample_labels:
+                if label < 0 or label >= diffusion_config.num_classes:
+                    raise ValueError(f"Sample label {label} is out of range for num_classes {diffusion_config.num_classes}.")
+            cond = torch.tensor(args.sample_labels, dtype=torch.long, device=device)
+        else:
+            cond = torch.randint(0, diffusion_config.num_classes, (args.n_sample,), device=device)
+    sample = diffusion_model.sample(n=args.n_sample, cond=cond)
+    if args.normalize:
+        sample = (sample + 1) / 2  # Rescale from [-1, 1] to [0, 1] for visualization
+    plot_images(sample, n=args.n_sample, save_path=os.path.join(OUTPUTS_FOLDER, f"{args.name}.png"))
 
 # -----------------------------------------------------------------------
 # Inference
 # -----------------------------------------------------------------------
+if args.launch_mode == "inference":
+    print_section("Launching in Inference mode...")
+
+    config_path = os.path.join(CONFIGS_FOLDER, f"{args.inference_config}.yaml")
+    if args.inference_config is not None:
+        config_dict = yaml.safe_load(open(config_path, "r"))
+        model_type = config_dict.get("model_type", args.inference_model_type)
+        num_inference_steps = config_dict.get("num_inference_steps", args.num_inference_steps)
+        description = config_dict.get("description", args.inference_description)
+        batch_size = config_dict.get("batch_size", args.batch_size)
+        guidance_scale = config_dict.get("guidance_scale", args.guidance_scale)
+        height = config_dict.get("height", args.height)
+        width = config_dict.get("width", args.width)
+    else:
+        model_type = args.inference_model_type
+        num_inference_steps = args.num_inference_steps
+        description = args.inference_description
+        batch_size = args.batch_size
+        guidance_scale = args.guidance_scale
+        height = args.height
+        width = args.width
+
+    cli_args = {
+        "is_nrt": args.is_nrt,
+        "seed": args.seed,
+        "device": device,
+        "model_type": model_type,
+        "num_inference_steps": num_inference_steps,
+        "description": description,
+        "save_name": args.name,
+        "batch_size": batch_size,
+        "guidance_scale": guidance_scale,
+        "height": height,
+        "width": width,
+        "save_model": args.save_model,
+        "show_architecture": args.show_architecture
+    }
+    command = build_launch_command(cli_args)
+    print("Command to run: " + " ".join(shlex.quote(part) for part in command))
+    result = subprocess.run(command, capture_output=True, text=True)
+    print(result.stdout)
+    if result.returncode != 0:
+        print("Errors:")
+        print(result.stderr)
+        raise RuntimeError(f"Inference process failed with return code {result.returncode}")
 
 # -----------------------------------------------------------------------
 # Fine-tuning
 # -----------------------------------------------------------------------
 if args.launch_mode == "finetuning":
+    print_section("Launching in Fine-tuning mode...")
 
+    config_path = os.path.join(CONFIGS_FOLDER, f"{args.finetuning_config}.yaml")
+    if args.finetuning_config is not None:
+        config_dict = yaml.safe_load(open(config_path, "r"))
+        experiment = config_dict.get("experiment", args.finetuning_experiment)
+        prompts = config_dict.get("prompts", args.finetuning_prompts)
+        batch_size = config_dict.get("batch_size", args.batch_size)
+        sampler = config_dict.get("sampler", args.finetuning_sampler)
+        height = config_dict.get("height", args.height)
+        width = config_dict.get("width", args.width)
+        num_inference_steps = config_dict.get("num_inference_steps", args.num_inference_steps)
+        guidance_scale = config_dict.get("guidance_scale", args.guidance_scale)
+        eta = config_dict.get("eta", args.finetuning_eta)
+        timesteps = config_dict.get("timesteps", args.timesteps)
+        beta_schedule = config_dict.get("beta_schedule", args.beta_schedule)
+        beta_start = config_dict.get("beta_start", args.beta_start)
+        beta_end = config_dict.get("beta_end", args.beta_end)
+        cosine_s = config_dict.get("cosine_s", args.cosine_s)
+        training_batch_size = config_dict.get("training_batch_size", args.training_batch_size)
+        epochs = config_dict.get("epochs", args.epochs)
+        learning_rate = config_dict.get("learning_rate", args.learning_rate)
+        weight_decay = config_dict.get("weight_decay", args.weight_decay)
+        gradient_clip = config_dict.get("gradient_clip", args.finetuning_gradient_clip)
+        lora_rank = config_dict.get("lora_rank", args.finetuning_lora_rank)
+        lora_alpha = config_dict.get("lora_alpha", args.finetuning_lora_alpha)
+    else:
+        experiment = args.finetuning_experiment
+        prompts = args.finetuning_prompts
+        batch_size = args.batch_size
+        sampler = args.finetuning_sampler
+        height = args.height
+        width = args.width
+        num_inference_steps = args.num_inference_steps
+        guidance_scale = args.guidance_scale
+        eta = args.finetuning_eta
+        timesteps = args.timesteps
+        beta_schedule = args.beta_schedule
+        beta_start = args.beta_start
+        beta_end = args.beta_end
+        cosine_s = args.cosine_s
+        training_batch_size = args.training_batch_size
+        epochs = args.epochs
+        learning_rate = args.learning_rate
+        weight_decay = args.weight_decay
+        gradient_clip = args.finetuning_gradient_clip
+        lora_rank = args.finetuning_lora_rank
+        lora_alpha = args.finetuning_lora_alpha
 
-
-
-
-
-    # For args.gan_architecture == "CGAN"
-    num_classes: = num_classes of the dataset (e.g., 10 for MNIST, 100 for CIFAR-100, etc.)
-update config.num_classes
-
-for conditional embeddings for diffision models
-"""
+    cli_args = {
+        "is_nrt": args.is_nrt,
+        "seed": args.seed,
+        "device": device,
+        "experiment": experiment,
+        "is_training": args.is_finetuning,
+        "prompts": prompts,
+        "batch_size": batch_size,
+        "sampler": sampler,
+        "height": height,
+        "width": width,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "eta": eta,
+        "timesteps": timesteps,
+        "beta_schedule": beta_schedule,
+        "beta_start": beta_start,
+        "beta_end": beta_end,
+        "cosine_s": cosine_s,
+        "training_batch_size": training_batch_size,
+        "epochs": epochs,
+        "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+        "gradient_clip": gradient_clip,
+        "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha,
+        "dataset": args.dataset,
+        "subset_size": args.subset_size,
+        "show_architecture" : args.show_architecture,
+        "save_model": args.save_model,
+        "lora_name": args.finetuning_lora_name,
+        "save_name": args.name
+    }
+    command = build_launch_command(cli_args)
+    print("Command to run: " + " ".join(shlex.quote(part) for part in command))
+    result = subprocess.run(command, capture_output=True, text=True)
+    print(result.stdout)
+    if result.returncode != 0:
+        print("Errors:")
+        print(result.stderr)
+        raise RuntimeError(f"Fine-tuning process failed with return code {result.returncode}")
