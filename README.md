@@ -444,12 +444,31 @@ options:
             Name of the experiment (used for saving outputs, configurations, models, etc.)
 
   --dataset {cifar10,fashion_mnist,imagefolder,mnist}
-            Dataset to use for training (cifar10, celebA, imagefolder (need to be prepared correctly in data/imagefolder previously))
+            Dataset to use for training (cifar10, fashion_mnist, imagefolder, mnist)
+  --downsample_size DOWNSAMPLE_SIZE [DOWNSAMPLE_SIZE ...]
+            Downsample size for the images (ex : 16x16 for CIFAR10 instead of 32x32)
+  --grayscale [GRAYSCALE]
+            If set, will convert images to grayscale
+  --normalize [NORMALIZE]
+            If set, will normalize images to [-1, 1]
+  --flatten [FLATTEN]   
+            If set, will flatten images to 1D vectors
   --subset_size SUBSET_SIZE
             Subset size for training (only for mnist and cifar10)
 
   --is_training [IS_TRAINING]
             If set, will run the training loop
+  --n_sample N_SAMPLE   
+            Number of samples to generate during training for visualization
+  --sample_labels SAMPLE_LABELS [SAMPLE_LABELS ...]
+            Labels for conditional sampling (for CGAN)
+
+  --show_architecture [SHOW_ARCHITECTURE]
+            If set, will print the architecture of the model
+  --save_model [SAVE_MODEL]
+            If set, will save the model parameters for future reuse without re-downloading the whole thing
+  --model_name MODEL_NAME
+            Name of the model to save/load weights for inference of those 'from scratch' models (vae, gan, diffusion)
 
   --timesteps TIMESTEPS
             Number of diffusion timesteps
@@ -484,13 +503,8 @@ options:
   --guidance_scale GUIDANCE_SCALE
             Guidance scale for image generation (default: 7.5, no guidance)
 
-  --show_architecture [SHOW_ARCHITECTURE]
-            If set, will print the architecture of the model
-  --save_model [SAVE_MODEL]
-            If set, will save the model parameters for future reuse without re-downloading the whole thing
-
   --vae_config VAE_CONFIG
-            Path to the VAE configuration file (e.g. data/configs/vae_config.yaml). If not provided, CLI arguments will be used to create the VAEConfig.
+            Name of the VAE configuration file (e.g. vae_config for data/configs/vae_config.yaml). If not provided, CLI arguments will be used to create the VAEConfig.
   --vae_model_type {vae,vqvae,fastvae}
             Type of VAE model to use
   --vae_architecture {mlp,cnn}
@@ -529,7 +543,7 @@ options:
             Gamma parameter for VAE training
 
   --gan_config GAN_CONFIG
-            Path to the GAN configuration file (e.g. data/configs/gan_config.yaml). If not provided, CLI arguments will be used to create the GANConfig.
+            Name of the GAN configuration file (e.g. gan_config for data/configs/gan_config.yaml). If not provided, CLI arguments will be used to create the GANConfig.
   --gan_architecture {GAN,CGAN,DCGAN,MLP_UnrolledGAN,DC_UnrolledGAN,StyleGAN}
             Architecture of the GAN model
   --gan_loss {Default,Wasserstein,LeastSquare}
@@ -590,7 +604,7 @@ options:
             EMA decay for GAN sampling
 
   --diffusion_config DIFFUSION_CONFIG
-            Path to the diffusion configuration file (e.g. data/configs/diffusion_config.yaml). If not provided, CLI arguments will be used to create the DiffusionConfig.
+            Name of the diffusion configuration file (e.g. diffusion_config for data/configs/diffusion_config.yaml). If not provided, CLI arguments will be used to create the DiffusionConfig.
   --diffusion_model_type {cnn,res_unet}
             Architecture of the diffusion model
   --diffusion_loss {mse,l1}
@@ -682,6 +696,8 @@ options:
   --diffusion_latent_scale_factor DIFFUSION_LATENT_SCALE_FACTOR
             Scale factor used when mapping latent variables to the VAE latent space
 
+  --inference_config INFERENCE_CONFIG
+            Name of the inference configuration file (e.g. inference_config for data/configs/inference_config.yaml). If not provided, default CLI arguments will be used.
   --inference_model_type {ddpm,stable_diffusion}
             Type of model to use for inference
   --inference_description INFERENCE_DESCRIPTION
@@ -689,6 +705,8 @@ options:
   --inference_batch_size INFERENCE_BATCH_SIZE
             Number of images to generate in a batch
 
+  --finetuning_config FINETUNING_CONFIG
+            Name of the fine-tuning configuration file (e.g. finetuning_config for data/configs/finetuning_config.yaml). If not provided, default CLI arguments will be used.
   --finetuning_experiment {baseline,custom_scheduler_and_sampling,finetune,lora}
             Type of experiment to run for fine-tuning
   --finetuning_prompts FINETUNING_PROMPTS [FINETUNING_PROMPTS ...]
