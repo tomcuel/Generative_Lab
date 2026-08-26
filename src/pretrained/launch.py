@@ -83,6 +83,12 @@ parser.add_argument("--experiment",
                     choices=["baseline", "custom_scheduler_and_sampling", "finetune", "lora"],
                     default="baseline",
                     help="Type of experiment to run for fine-tuning")
+parser.add_argument("--is_training",
+                    type=str2bool,
+                    nargs="?",
+                    const=True,
+                    default=False,
+                    help="If set, will run the training loop for fine-tuning")
 
 # ------------------------------------------------------------
 # Sampling
@@ -361,117 +367,118 @@ elif args.experiment in ("finetune", "lora"):
     print(f"EXPERIMENT: {args.experiment.upper()}")
     print("=" * 70)
 
-    # --------------------------------------------------------
-    # 1. Freeze VAE + text encoder
-    # --------------------------------------------------------
-    print("\n[1/6] Freezing VAE...")
-    pipeline.freeze_vae()
-    print("      ✓ VAE frozen")
+    if args.is_training:
+        # --------------------------------------------------------
+        # 1. Freeze VAE + text encoder
+        # --------------------------------------------------------
+        print("\n[1/6] Freezing VAE...")
+        pipeline.freeze_vae()
+        print("      ✓ VAE frozen")
 
-    print("\n[2/6] Freezing text encoder...")
-    pipeline.freeze_text_encoder()
-    print("      ✓ Text encoder frozen")
+        print("\n[2/6] Freezing text encoder...")
+        pipeline.freeze_text_encoder()
+        print("      ✓ Text encoder frozen")
 
-    # --------------------------------------------------------
-    # 2. Configure UNet
-    # --------------------------------------------------------
-    if args.experiment == "lora":
-        print("\n[3/6] Enabling LoRA...")
-        pipeline.enable_lora(rank=args.lora_rank, alpha=args.lora_alpha)
-        trainable = list(pipeline.trainable_parameters())
-        print(f"      ✓ LoRA enabled")
-        print(f"      Trainable tensors: {len(trainable)}")
-    else:
-        print("\n[3/6] Enabling full UNet fine-tuning...")
-        pipeline.unet.requires_grad_(True)
-        trainable = list(pipeline.unet.parameters())
-        print("      ✓ UNet trainable")
-
-    # --------------------------------------------------------
-    # 3. Dataset
-    # --------------------------------------------------------
-    print("\n[4/6] Loading dataset...")
-    if args.dataset == "cifar10":
-        print("      Dataset: CIFAR-10")
-        loader = load_cifar10(batch_size=args.training_batch_size, downsample=(args.height, args.width), grayscale=False, normalize=True, flatten=False, train=True, subset_size=args.subset_size)
-    elif args.dataset == "imagefolder":
-        dataset_path = PROJECT_ROOT / "data" / "imagefolder"
-        if not dataset_path.exists():
-            raise FileNotFoundError(f"Dataset not found:\n{dataset_path}")
-
-        transform = transforms.Compose([
-            transforms.Resize((args.height, args.width), interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
-        ])
-        dataset = datasets.ImageFolder(root=str(dataset_path), transform=transform)
-        loader = DataLoader(dataset, batch_size=args.training_batch_size, shuffle=True)
-    else:
-        raise ValueError(f"Unknown dataset: {args.dataset}")
-
-    pipeline.class_names = getattr(loader, "class_names", None)
-    
-    print(f"      ✓ Dataset loaded")
-    print(f"      Batches: {len(loader)}")
-    print("      Dataset captions:")
-    for i, caption in enumerate(pipeline.class_names or []):
-        print(f"        {i}: {caption}")
-
-    # --------------------------------------------------------
-    # 4. Optimizer
-    # --------------------------------------------------------
-    trainable_parameters = [p for p in pipeline.trainable_parameters() if p.requires_grad]
-    if len(trainable_parameters) == 0:
-        raise RuntimeError("No trainable parameters found!")
-    n_parameters = sum(p.numel() for p in trainable_parameters)
-
-    print("\nTrainable parameters:")
-    print(f"      {n_parameters:,}")
-
-    optimizer = torch.optim.AdamW(trainable_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
-
-    # --------------------------------------------------------
-    # 5. Training
-    # --------------------------------------------------------
-    print("\n[5/6] Starting training...")
-    print("-" * 70)
-    for epoch in range(args.epochs):
-        pipeline.unet.train()
-
-        total_loss = 0.0
-        num_batches = 0
-
-        for batch_idx, batch in enumerate(loader):
-            if isinstance(batch, (list, tuple)):
-                images = batch[0]
-                labels = (batch[1] if len(batch) > 1 else None)
-            else:
-                images = batch
-                labels = None
-            images = images.to(device)
-
-            loss = pipeline.train_step(images, optimizer=optimizer, gradient_clip_value=args.gradient_clip, prompts=None, labels=labels)
-
-            total_loss += float(loss)
-            num_batches += 1
-
-            print(f"Epoch {epoch + 1}/{args.epochs} | batch {batch_idx + 1}/{len(loader)} | loss={loss:.6f}", flush=True)
-
-        mean_loss = total_loss / max(num_batches, 1)
-        print(f"\n>>> Epoch {epoch + 1}/{args.epochs} | mean loss = {mean_loss:.6f}\n", flush=True)
-
-    # --------------------------------------------------------
-    # 6. Save
-    # --------------------------------------------------------
-    print("[6/6] Saving model...")
-    if args.save_model:
+        # --------------------------------------------------------
+        # 2. Configure UNet
+        # --------------------------------------------------------
         if args.experiment == "lora":
-            pipeline.save_lora_adapter(model_save_path, adapter_name=args.lora_name)
-            pipeline.save_finetuned_model(model_save_path)
-            print(f"✓ LoRA saved to {model_save_path / args.lora_name}")
+            print("\n[3/6] Enabling LoRA...")
+            pipeline.enable_lora(rank=args.lora_rank, alpha=args.lora_alpha)
+            trainable = list(pipeline.trainable_parameters())
+            print(f"      ✓ LoRA enabled")
+            print(f"      Trainable tensors: {len(trainable)}")
         else:
-            pipeline.save_finetuned_model(model_save_path)
-            print(f"✓ Fine-tuned UNet saved to {model_save_path}")
+            print("\n[3/6] Enabling full UNet fine-tuning...")
+            pipeline.unet.requires_grad_(True)
+            trainable = list(pipeline.unet.parameters())
+            print("      ✓ UNet trainable")
+
+        # --------------------------------------------------------
+        # 3. Dataset
+        # --------------------------------------------------------
+        print("\n[4/6] Loading dataset...")
+        if args.dataset == "cifar10":
+            print("      Dataset: CIFAR-10")
+            loader = load_cifar10(batch_size=args.training_batch_size, downsample=(args.height, args.width), grayscale=False, normalize=True, flatten=False, train=True, subset_size=args.subset_size)
+        elif args.dataset == "imagefolder":
+            dataset_path = PROJECT_ROOT / "data" / "imagefolder"
+            if not dataset_path.exists():
+                raise FileNotFoundError(f"Dataset not found:\n{dataset_path}")
+
+            transform = transforms.Compose([
+                transforms.Resize((args.height, args.width), interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+            ])
+            dataset = datasets.ImageFolder(root=str(dataset_path), transform=transform)
+            loader = DataLoader(dataset, batch_size=args.training_batch_size, shuffle=True)
+        else:
+            raise ValueError(f"Unknown dataset: {args.dataset}")
+
+        pipeline.class_names = getattr(loader, "class_names", None)
+        
+        print(f"      ✓ Dataset loaded")
+        print(f"      Batches: {len(loader)}")
+        print("      Dataset captions:")
+        for i, caption in enumerate(pipeline.class_names or []):
+            print(f"        {i}: {caption}")
+
+        # --------------------------------------------------------
+        # 4. Optimizer
+        # --------------------------------------------------------
+        trainable_parameters = [p for p in pipeline.trainable_parameters() if p.requires_grad]
+        if len(trainable_parameters) == 0:
+            raise RuntimeError("No trainable parameters found!")
+        n_parameters = sum(p.numel() for p in trainable_parameters)
+
+        print("\nTrainable parameters:")
+        print(f"      {n_parameters:,}")
+
+        optimizer = torch.optim.AdamW(trainable_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)
+
+        # --------------------------------------------------------
+        # 5. Training
+        # --------------------------------------------------------
+        print("\n[5/6] Starting training...")
+        print("-" * 70)
+        for epoch in range(args.epochs):
+            pipeline.unet.train()
+
+            total_loss = 0.0
+            num_batches = 0
+
+            for batch_idx, batch in enumerate(loader):
+                if isinstance(batch, (list, tuple)):
+                    images = batch[0]
+                    labels = (batch[1] if len(batch) > 1 else None)
+                else:
+                    images = batch
+                    labels = None
+                images = images.to(device)
+
+                loss = pipeline.train_step(images, optimizer=optimizer, gradient_clip_value=args.gradient_clip, prompts=None, labels=labels)
+
+                total_loss += float(loss)
+                num_batches += 1
+
+                print(f"Epoch {epoch + 1}/{args.epochs} | batch {batch_idx + 1}/{len(loader)} | loss={loss:.6f}", flush=True)
+
+            mean_loss = total_loss / max(num_batches, 1)
+            print(f"\n>>> Epoch {epoch + 1}/{args.epochs} | mean loss = {mean_loss:.6f}\n", flush=True)
+
+        # --------------------------------------------------------
+        # 6. Save
+        # --------------------------------------------------------
+        print("[6/6] Saving model...")
+        if args.save_model:
+            if args.experiment == "lora":
+                pipeline.save_lora_adapter(model_save_path, adapter_name=args.lora_name)
+                pipeline.save_finetuned_model(model_save_path)
+                print(f"✓ LoRA saved to {model_save_path / args.lora_name}")
+            else:
+                pipeline.save_finetuned_model(model_save_path)
+                print(f"✓ Fine-tuned UNet saved to {model_save_path}")
 
     # --------------------------------------------------------
     # Sampling
@@ -497,9 +504,6 @@ elif args.experiment in ("finetune", "lora"):
         eta=args.eta
     )
     print("✓ Sampling finished")
-
-    images = _images_to_pil_list(images)
-    print(f"Generated {len(images)} image(s)")
 
     # ----------------------------------------------------
     # Save

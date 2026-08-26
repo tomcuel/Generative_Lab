@@ -463,7 +463,7 @@ options:
 
 ### Fine-Tuning
 ```bash
-usage: launch.py [-h] [--is_nrt [IS_NRT]] [--seed SEED] [--device {auto,cpu,cuda}] [--experiment {baseline,custom_scheduler_and_sampling,finetune,lora}] [--prompts PROMPTS [PROMPTS ...]] [--batch_size BATCH_SIZE] [--sampler {ddpm,ddim}] [--height HEIGHT] [--width WIDTH] [--num_inference_steps NUM_INFERENCE_STEPS] [--guidance_scale GUIDANCE_SCALE] [--eta ETA] [--timesteps TIMESTEPS] [--beta_schedule {linear,cosine}] [--beta_start BETA_START] [--beta_end BETA_END] [--cosine_s COSINE_S] [--training_batch_size TRAINING_BATCH_SIZE] [--epochs EPOCHS] [--learning_rate LEARNING_RATE] [--weight_decay WEIGHT_DECAY] [--gradient_clip GRADIENT_CLIP] [--lora_rank LORA_RANK] [--lora_alpha LORA_ALPHA] [--dataset {cifar10,imagefolder}] [--subset_size SUBSET_SIZE] [--show_architecture [SHOW_ARCHITECTURE]] [--save_model [SAVE_MODEL]] [--lora_name LORA_NAME] [--save_name SAVE_NAME]
+usage: launch.py [-h] [--is_nrt [IS_NRT]] [--seed SEED] [--device {auto,cpu,cuda}] [--experiment {baseline,custom_scheduler_and_sampling,finetune,lora}] [--is_training [IS_TRAINING]] [--prompts PROMPTS [PROMPTS ...]] [--batch_size BATCH_SIZE] [--sampler {ddpm,ddim}] [--height HEIGHT] [--width WIDTH] [--num_inference_steps NUM_INFERENCE_STEPS] [--guidance_scale GUIDANCE_SCALE] [--eta ETA] [--timesteps TIMESTEPS] [--beta_schedule {linear,cosine}] [--beta_start BETA_START] [--beta_end BETA_END] [--cosine_s COSINE_S] [--training_batch_size TRAINING_BATCH_SIZE] [--epochs EPOCHS] [--learning_rate LEARNING_RATE] [--weight_decay WEIGHT_DECAY] [--gradient_clip GRADIENT_CLIP] [--lora_rank LORA_RANK] [--lora_alpha LORA_ALPHA] [--dataset {cifar10,imagefolder}] [--subset_size SUBSET_SIZE] [--show_architecture [SHOW_ARCHITECTURE]] [--save_model [SAVE_MODEL]] [--lora_name LORA_NAME] [--save_name SAVE_NAME]
 
 Generative Lab - Pretrained Diffusion Experiments
 
@@ -478,6 +478,8 @@ options:
             Device to run fine-tuning on (auto selects cuda if available)
   --experiment {baseline,custom_scheduler_and_sampling,finetune,lora}
             Type of experiment to run for fine-tuning
+--is_training [IS_TRAINING]
+            If set, will run the training loop for fine-tuning
   --prompts PROMPTS [PROMPTS ...]
             List of prompts for image generation
   --batch_size BATCH_SIZE

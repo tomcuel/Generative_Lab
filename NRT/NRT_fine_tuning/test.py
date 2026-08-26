@@ -139,6 +139,7 @@ def test_experiment_c():
         "seed": 42,
         "device": "auto",
         "experiment": "custom_scheduler_and_sampling",
+        "is_training": False,
         "prompts": [
             "an airplane",
             "an automobile",    
@@ -171,6 +172,7 @@ def test_experiment_c():
         "seed": 42,
         "device": "auto",
         "experiment": "lora",
+        "is_training": True,
         "prompts": [
             "an airplane",
             "an automobile",
@@ -220,7 +222,7 @@ python src/pretrained/launch.py --is_nrt=True --seed=42 --device=auto --experime
 --show_architecture=False --save_model=False --save_name=experiment_a 
 
 command line usage example (Fine-tuning with LoRA):
-python src/pretrained/launch.py --is_nrt=True --seed=42 --device=auto --experiment lora --prompts 'an airplane' 'an automobile' 'a bird' --sampler ddim 
+python src/pretrained/launch.py --is_nrt=True --seed=42 --device=auto --experiment lora --is_training=True --prompts 'an airplane' 'an automobile' 'a bird' --sampler ddim 
 --height 256 --width 256 --num_inference_steps 20 --guidance_scale 7.5 
 --timesteps 1000 --beta_schedule linear --beta_start 0.0001 --beta_end 0.02 --cosine_s 0.008 
 --epochs 1 --learning_rate 0.0001 --weight_decay 0.01 --gradient_clip 1.0 

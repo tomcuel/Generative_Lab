@@ -252,6 +252,7 @@ python src/pretrained/launch.py \
     --seed=42 \
     --device=auto \
     --experiment=baseline \
+    --is_training=True \
     --prompts='an airplane' 'an automobile' 'a bird' \
     --sampler=ddim \
     --height=256 \
